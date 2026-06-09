@@ -10,7 +10,7 @@ BAIDU_MAP_ROUTE_MATRIX_URL = "https://api.map.baidu.com/routematrix/v2/driving"
 BAIDU_MAP_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"
 
 # 矩阵构建分批大小（origins 和 destinations 各不超过该值）
-MATRIX_BATCH_SIZE: int = 10
+MATRIX_BATCH_SIZE: int = 7
 
 # 百度地图请求重试配置
 MAX_RETRIES: int = 3
