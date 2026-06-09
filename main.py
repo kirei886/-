@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from baidu_map import InvalidAKError, MatrixBuildError, fetch_segment_detail
+from config import LARGE_COST
 from cost_matrix import build_cost_matrix
 from models import RouteRequest, RouteResponse, Segment
 from solver import solve
@@ -72,6 +73,22 @@ def plan_route(request: RouteRequest) -> RouteResponse:
 
     # ordered_sub_indices: 0~num_starts-1 对应可达起点，num_starts 对应终点
     ordered_sub = solve_result.ordered_sub_indices
+
+    # --- 步骤2.5：检查相邻站点连通性 ---
+    # OR-Tools 对不可达路段赋予 LARGE_COST 惩罚但不硬禁止，
+    # 若被迫走了死路则成本矩阵中该段 >= LARGE_COST，需在此拦截。
+    for idx in range(len(ordered_sub) - 1):
+        from_sub = ordered_sub[idx]
+        to_sub = ordered_sub[idx + 1]
+        # cost_matrix 节点偏移 +1（节点 0 为虚拟节点）
+        if matrix_result.cost_matrix[from_sub + 1][to_sub + 1] >= LARGE_COST:
+            from_id = reachable_starts[from_sub].id if from_sub < num_starts else request.end_point.id
+            to_id = reachable_starts[to_sub].id if to_sub < num_starts else request.end_point.id
+            return RouteResponse(
+                status="no_solution",
+                message=f"部分站点间无法连通：{from_id} → {to_id}",
+                unreachable_points=unreachable_ids,
+            )
 
     # --- 步骤3：将 sub_indices 映射为真实站点 ID ---
     # sub_indices 中的坐标来源：reachable_starts[0..M-1] + end_point
