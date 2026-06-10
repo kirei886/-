@@ -5,12 +5,11 @@
 OR-Tools 所需的整数成本矩阵，并检测不可达点位。
 
 节点编号约定（与 solver.py 保持一致）：
-  0          → 虚拟节点（dummy depot）
-  1 ~ N      → start_points（上车点）
-  N+1        → end_point（企业终点）
+  0          → 企业终点（depot，车队起点兼终点）
+  1 ~ M      → 可达上车点
 """
 
-from typing import Dict, List, NamedTuple, Tuple
+from typing import List, NamedTuple, Tuple
 
 from baidu_map import MatrixBuildError, RouteData, fetch_route_matrix
 from config import DISTANCE_WEIGHT, LARGE_COST, TIME_WEIGHT
@@ -19,7 +18,7 @@ from config import DISTANCE_WEIGHT, LARGE_COST, TIME_WEIGHT
 class CostMatrixResult(NamedTuple):
     """成本矩阵构建结果。"""
     # OR-Tools 整数成本矩阵，shape = (total_nodes × total_nodes)
-    # total_nodes = 1 (虚拟节点) + len(reachable_starts) + 1 (终点)
+    # total_nodes = 1 (depot=终点) + len(reachable_starts)
     cost_matrix: List[List[int]]
 
     # 可达起点的原始索引（在 start_points 中的位置）
@@ -28,9 +27,9 @@ class CostMatrixResult(NamedTuple):
     # 不可达起点的原始索引
     unreachable_indices: List[int]
 
-    # 原始路网数据矩阵（用于阶段四组装分段结果）
-    # shape = [len(reachable_starts) + 1][len(reachable_starts) + 1]
-    # 索引 0~N-1 对应 reachable_starts，索引 N 对应 end_point
+    # 原始路网数据矩阵（用于组装分段结果）
+    # shape = [1 + len(reachable_starts)][1 + len(reachable_starts)]
+    # 索引 0 对应 end_point（depot），索引 1~M 对应 reachable_starts
     route_data: List[List[RouteData]]
 
 
@@ -62,12 +61,16 @@ def build_cost_matrix(
     1. 组合所有点位（starts + end），调用百度地图批量算路
     2. 检测不可达点位（某起点到终点不可达，则剔除）
     3. 按优化目标生成成本值
-    4. 构建带虚拟节点的 OR-Tools 整数矩阵
+    4. 构建以企业终点为 depot 的 OR-Tools 整数矩阵
 
     OR-Tools 矩阵节点编号：
-      0        → 虚拟节点
+      0        → 企业终点（depot，车队起点兼终点）
       1 ~ M    → 可达起点（M = len(reachable_indices)）
-      M+1      → 终点
+
+    弧成本语义（保留「首段免费、起点任意」，且对每辆车独立成立）：
+      depot → 任意上车点 = 0（空驶免费，等价「从任意起点出发」）
+      上车点 → 终点 / 上车点间 = 真实成本
+      不可达腿 = LARGE_COST
 
     Args:
         start_coords: 起点坐标列表 [(lat, lng), ...]
@@ -86,7 +89,6 @@ def build_cost_matrix(
 
     # 所有点位合并：starts[0..N-1] + end[N]
     all_coords = list(start_coords) + [end_coord]
-    n_all = len(all_coords)  # N + 1
 
     # 调用百度地图，获取完整 (N+1) × (N+1) 路网矩阵
     raw_matrix = fetch_route_matrix(all_coords, all_coords, ak)
@@ -106,48 +108,39 @@ def build_cost_matrix(
     if not reachable_indices:
         raise MatrixBuildError("所有起点均不可达终点，无法构建成本矩阵")
 
-    # 提取可达起点子矩阵 + 终点行列
-    # 节点顺序：reachable_starts... + end
-    sub_indices = reachable_indices + [end_idx]  # 在 all_coords 中的索引
-    M = len(reachable_indices)  # 可达起点数量
-    sub_size = M + 1            # 可达起点 + 终点
+    # 节点顺序：depot(终点) + 可达上车点
+    # sub_indices[0] = 终点，sub_indices[1..M] = 可达起点
+    sub_indices = [end_idx] + reachable_indices  # 在 all_coords 中的索引
+    M = len(reachable_indices)   # 可达起点数量
+    total_nodes = 1 + M          # depot + 可达起点
 
-    # 构建子路网矩阵（用于阶段四查询原始 distance/duration）
+    # 构建子路网矩阵（用于查询原始 distance/duration）
+    # route_data[i][j] = 节点 i → 节点 j 的真实路网数据
     route_data: List[List[RouteData]] = [
-        [raw_matrix[sub_indices[i]][sub_indices[j]] for j in range(sub_size)]
-        for i in range(sub_size)
+        [raw_matrix[sub_indices[i]][sub_indices[j]] for j in range(total_nodes)]
+        for i in range(total_nodes)
     ]
 
-    # 构建 OR-Tools 成本矩阵，总节点数 = 1 (虚拟) + M (可达起点) + 1 (终点)
-    total_nodes = 1 + M + 1  # 虚拟节点=0，起点=1~M，终点=M+1
+    # 构建 OR-Tools 成本矩阵
     cost_matrix: List[List[int]] = [
         [0] * total_nodes for _ in range(total_nodes)
     ]
 
-    # 填充真实节点间的成本（OR-Tools 节点 1~M+1 对应 sub_indices 0~M）
-    for i in range(sub_size):
-        for j in range(sub_size):
-            rd = route_data[i][j]
+    for i in range(total_nodes):
+        for j in range(total_nodes):
             if i == j:
-                cost = 0
-            elif not rd.reachable:
-                cost = LARGE_COST
+                cost_matrix[i][j] = 0
+            elif i == 0:
+                # depot → 任意上车点：免费（空驶，等价「从任意起点出发」）
+                cost_matrix[i][j] = 0
             else:
-                cost = _to_int_cost(_compute_cost(rd.duration, rd.distance, optimize_type))
-            # OR-Tools 节点偏移 +1（节点 0 是虚拟节点）
-            cost_matrix[i + 1][j + 1] = cost
-
-    # 虚拟节点（0）的成本设置：
-    #   虚拟节点 → 任意可达起点（1~M）：0（允许从任意起点出发）
-    #   虚拟节点 → 终点（M+1）：LARGE_COST（禁止直接去终点跳过所有起点）
-    #   终点（M+1）→ 虚拟节点（0）：0（闭环）
-    #   任意起点 → 虚拟节点（0）：LARGE_COST（禁止中途回到虚拟节点）
-    for i in range(1, M + 1):
-        cost_matrix[0][i] = 0              # 虚拟节点 → 起点：免费
-        cost_matrix[i][0] = LARGE_COST    # 起点 → 虚拟节点：禁止
-
-    cost_matrix[0][M + 1] = LARGE_COST    # 虚拟节点 → 终点：禁止
-    cost_matrix[M + 1][0] = 0             # 终点 → 虚拟节点：闭环
+                rd = route_data[i][j]
+                if not rd.reachable:
+                    cost_matrix[i][j] = LARGE_COST
+                else:
+                    cost_matrix[i][j] = _to_int_cost(
+                        _compute_cost(rd.duration, rd.distance, optimize_type)
+                    )
 
     return CostMatrixResult(
         cost_matrix=cost_matrix,

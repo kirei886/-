@@ -4,9 +4,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from baidu_map import InvalidAKError, MatrixBuildError, fetch_segment_detail
-from config import BAIDU_MAP_AK, LARGE_COST
+from config import (
+    BAIDU_MAP_AK,
+    DEFAULT_NUM_VEHICLES,
+    DEFAULT_VEHICLE_CAPACITY,
+    LARGE_COST,
+)
 from cost_matrix import build_cost_matrix
-from models import RouteRequest, RouteResponse, Segment
+from models import RouteRequest, RouteResponse, Segment, VehicleRoute
 from solver import solve
 
 app = FastAPI(
@@ -23,14 +28,17 @@ def _error_response(message: str) -> RouteResponse:
 @app.post("/api/v1/route/plan", response_model=RouteResponse)
 def plan_route(request: RouteRequest) -> RouteResponse:
     """
-    企业班车路径规划接口（同步）。
+    企业班车路径规划接口（同步，多车 CVRP）。
 
-    接收多个上车点和一个企业终点，返回最优经过顺序、总耗时、总距离和分段路径详情。
+    接收多个上车点和一个企业终点，按固定车辆数 + 统一容量分配多条班车线路，
+    每条线路返回最优经停顺序、距离、耗时和分段路径详情。
     """
     ak = BAIDU_MAP_AK
     if not ak:
         return _error_response("服务端未配置百度地图 AK，请在 .env 中设置 BAIDU_MAP_AK")
     max_solve_time = request.max_solve_time or 30
+    num_vehicles = request.num_vehicles or DEFAULT_NUM_VEHICLES
+    vehicle_capacity = request.vehicle_capacity or DEFAULT_VEHICLE_CAPACITY
 
     # 起点/终点坐标列表
     start_coords: List[Tuple[float, float]] = [
@@ -59,10 +67,29 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     ]
     num_starts = len(reachable_starts)
 
-    # --- 步骤2：OR-Tools 求解 ---
+    # --- 步骤1.5：运力预判 ---
+    # 阶段一每站点需求=1，车队总运力 = 车辆数 × 单车容量。
+    if num_starts > num_vehicles * vehicle_capacity:
+        return RouteResponse(
+            status="no_solution",
+            message=(
+                f"运力不足：可达站点数 {num_starts} 超过车队总运力 "
+                f"{num_vehicles} 辆 × {vehicle_capacity} = {num_vehicles * vehicle_capacity}"
+            ),
+            unreachable_points=unreachable_ids,
+        )
+
+    # --- 步骤2：OR-Tools 多车求解 ---
+    # 节点 0 = depot（终点），1~M = 可达起点；需求 depot=0、每站点=1
+    demands = [0] + [1] * num_starts
+    vehicle_capacities = [vehicle_capacity] * num_vehicles
+
     solve_result = solve(
         matrix_result.cost_matrix,
         num_starts=num_starts,
+        num_vehicles=num_vehicles,
+        demands=demands,
+        vehicle_capacities=vehicle_capacities,
         max_solve_time=max_solve_time,
     )
 
@@ -73,80 +100,94 @@ def plan_route(request: RouteRequest) -> RouteResponse:
             unreachable_points=unreachable_ids,
         )
 
-    # ordered_sub_indices: 0~num_starts-1 对应可达起点，num_starts 对应终点
-    ordered_sub = solve_result.ordered_sub_indices
+    # --- 节点映射工具 ---
+    # OR-Tools/成本矩阵节点：0=终点(depot)，k(1~M)=可达起点 k-1
+    # 求解器返回的 pickup 下标为「可达起点下标」(0~M-1)，对应节点 pickup+1
+    def pickup_to_id(sub_idx: int) -> str:
+        return reachable_starts[sub_idx].id
 
-    # --- 步骤2.5：检查相邻站点连通性 ---
-    # OR-Tools 对不可达路段赋予 LARGE_COST 惩罚但不硬禁止，
-    # 若被迫走了死路则成本矩阵中该段 >= LARGE_COST，需在此拦截。
-    for idx in range(len(ordered_sub) - 1):
-        from_sub = ordered_sub[idx]
-        to_sub = ordered_sub[idx + 1]
-        # cost_matrix 节点偏移 +1（节点 0 为虚拟节点）
-        if matrix_result.cost_matrix[from_sub + 1][to_sub + 1] >= LARGE_COST:
-            from_id = reachable_starts[from_sub].id if from_sub < num_starts else request.end_point.id
-            to_id = reachable_starts[to_sub].id if to_sub < num_starts else request.end_point.id
-            return RouteResponse(
-                status="no_solution",
-                message=f"部分站点间无法连通：{from_id} → {to_id}",
-                unreachable_points=unreachable_ids,
-            )
+    def pickup_to_coord(sub_idx: int) -> Tuple[float, float]:
+        p = reachable_starts[sub_idx]
+        return (p.lat, p.lng)
 
-    # --- 步骤3：将 sub_indices 映射为真实站点 ID ---
-    # sub_indices 中的坐标来源：reachable_starts[0..M-1] + end_point
-    def sub_idx_to_id(sub_idx: int) -> str:
-        if sub_idx < num_starts:
-            return reachable_starts[sub_idx].id
-        return request.end_point.id
+    end_id = request.end_point.id
+    # 成本矩阵 / route_data 中的节点下标：终点=0，可达起点 sub_idx -> sub_idx+1
+    def pickup_to_node(sub_idx: int) -> int:
+        return sub_idx + 1
 
-    def sub_idx_to_coord(sub_idx: int) -> Tuple[float, float]:
-        if sub_idx < num_starts:
-            p = reachable_starts[sub_idx]
-            return (p.lat, p.lng)
-        return end_coord
-
-    route_order = [sub_idx_to_id(i) for i in ordered_sub]
-
-    # --- 步骤4：补充分段路径详情（polyline + 精确 distance/duration） ---
-    segments: List[Segment] = []
+    # --- 步骤3：逐车组装结果 ---
+    vehicle_routes: List[VehicleRoute] = []
     warnings: List[str] = []
-    total_distance = 0.0
-    total_duration = 0.0
+    fleet_distance = 0.0
+    fleet_duration = 0.0
 
-    for idx in range(len(ordered_sub) - 1):
-        from_sub = ordered_sub[idx]
-        to_sub = ordered_sub[idx + 1]
+    for v_idx, pickups in enumerate(solve_result.routes):
+        # 该车真实经停的「节点序列」：起点们 + 终点(0)
+        # 相邻腿用于连通性校验与分段查询。
+        leg_nodes = [pickup_to_node(s) for s in pickups] + [0]
 
-        from_id = sub_idx_to_id(from_sub)
-        to_id = sub_idx_to_id(to_sub)
-        from_coord = sub_idx_to_coord(from_sub)
-        to_coord = sub_idx_to_coord(to_sub)
+        # 连通性二次校验：相邻真实腿成本 >= LARGE_COST 视为走死路
+        for idx in range(len(leg_nodes) - 1):
+            a = leg_nodes[idx]
+            b = leg_nodes[idx + 1]
+            if matrix_result.cost_matrix[a][b] >= LARGE_COST:
+                from_id = pickup_to_id(a - 1) if a != 0 else end_id
+                to_id = pickup_to_id(b - 1) if b != 0 else end_id
+                return RouteResponse(
+                    status="no_solution",
+                    message=f"部分站点间无法连通：{from_id} → {to_id}",
+                    unreachable_points=unreachable_ids,
+                )
 
-        detail = fetch_segment_detail(from_coord, to_coord, ak)
+        # 分段 polyline + 精确距离/耗时
+        segments: List[Segment] = []
+        route_distance = 0.0
+        route_duration = 0.0
 
-        if detail["success"]:
-            distance = detail["distance"]
-            duration = detail["duration"]
-            path = detail["path"]
-        else:
-            # polyline 获取失败：降级使用矩阵中的原始数据
-            rd = matrix_result.route_data[from_sub][to_sub]
-            distance = rd.distance
-            duration = rd.duration
-            path = []
-            warnings.append(f"{from_id}→{to_id} 路径轨迹获取失败，已使用估算数据")
+        for idx in range(len(leg_nodes) - 1):
+            a = leg_nodes[idx]
+            b = leg_nodes[idx + 1]
+            from_id = pickup_to_id(a - 1) if a != 0 else end_id
+            to_id = pickup_to_id(b - 1) if b != 0 else end_id
+            from_coord = pickup_to_coord(a - 1) if a != 0 else end_coord
+            to_coord = pickup_to_coord(b - 1) if b != 0 else end_coord
 
-        total_distance += distance
-        total_duration += duration
-        segments.append(Segment(
-            from_id=from_id,
-            to_id=to_id,
-            distance=distance,
-            duration=duration,
-            path=path,
+            detail = fetch_segment_detail(from_coord, to_coord, ak)
+            if detail["success"]:
+                distance = detail["distance"]
+                duration = detail["duration"]
+                path = detail["path"]
+            else:
+                # polyline 获取失败：降级使用矩阵中的原始数据
+                rd = matrix_result.route_data[a][b]
+                distance = rd.distance
+                duration = rd.duration
+                path = []
+                warnings.append(f"{from_id}→{to_id} 路径轨迹获取失败，已使用估算数据")
+
+            route_distance += distance
+            route_duration += duration
+            segments.append(Segment(
+                from_id=from_id,
+                to_id=to_id,
+                distance=distance,
+                duration=duration,
+                path=path,
+            ))
+
+        route_order = [pickup_to_id(s) for s in pickups] + [end_id]
+        vehicle_routes.append(VehicleRoute(
+            vehicle_index=v_idx,
+            route_order=route_order,
+            total_distance=route_distance,
+            total_duration=route_duration,
+            segments=segments,
+            load=len(pickups),
         ))
+        fleet_distance += route_distance
+        fleet_duration += route_duration
 
-    # --- 步骤5：组装最终响应 ---
+    # --- 步骤4：组装最终响应 ---
     has_unreachable = bool(unreachable_ids)
     has_warnings = bool(warnings)
 
@@ -169,10 +210,9 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     return RouteResponse(
         status="success",
         message=message,
-        route_order=route_order,
-        total_distance=total_distance,
-        total_duration=total_duration,
-        segments=segments,
+        routes=vehicle_routes,
+        total_distance=fleet_distance,
+        total_duration=fleet_duration,
         unreachable_points=unreachable_ids,
     )
 

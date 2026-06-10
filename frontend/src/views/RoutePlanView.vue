@@ -7,7 +7,7 @@
  */
 import { onMounted, ref } from 'vue'
 import { planRoute } from '@/api/route'
-import { useRouteMap, type MapPoint } from '@/composables/useRouteMap'
+import { useRouteMap, ROUTE_PALETTE, type MapPoint } from '@/composables/useRouteMap'
 import type {
   OptimizeType,
   RouteRequest,
@@ -42,9 +42,17 @@ const endPoint = ref<PointForm>({
   lat: '30.5728',
 })
 const optimizeType = ref<OptimizeType>('time')
+// 车队参数（阶段一：固定车辆数 + 统一容量，容量语义为单车最多经停站点数）
+const numVehicles = ref<string>('3')
+const vehicleCapacity = ref<string>('2')
 
 const mapEl = ref<HTMLElement | null>(null)
 const { initMap, drawRoute, scriptError } = useRouteMap()
+
+/** 第 v 辆车的配色，与地图画线一致 */
+function vehicleColor(vIdx: number): string {
+  return ROUTE_PALETTE[vIdx % ROUTE_PALETTE.length]
+}
 
 const submitting = ref(false)
 const errorMsg = ref<string | null>(null)
@@ -88,10 +96,22 @@ function buildRequest(): RouteRequest | null {
     errorMsg.value = '终点名称或坐标无效'
     return null
   }
+  const nVehicles = Number(numVehicles.value)
+  const capacity = Number(vehicleCapacity.value)
+  if (!Number.isInteger(nVehicles) || nVehicles < 1) {
+    errorMsg.value = '车辆数需为不小于 1 的整数'
+    return null
+  }
+  if (!Number.isInteger(capacity) || capacity < 1) {
+    errorMsg.value = '单车最多站点需为不小于 1 的整数'
+    return null
+  }
   return {
     start_points: parsed,
     end_point: { id: endPoint.value.id, name: endPoint.value.name.trim(), lat: eLat, lng: eLng },
     optimize_type: optimizeType.value,
+    num_vehicles: nVehicles,
+    vehicle_capacity: capacity,
   }
 }
 
@@ -179,6 +199,20 @@ onMounted(async () => {
         <label class="radio"><input v-model="optimizeType" type="radio" value="cost" />成本</label>
       </section>
 
+      <section class="field-group">
+        <div class="field-group__head"><span>车队</span></div>
+        <div class="point-row">
+          <label class="fleet-field">
+            <span class="fleet-field__label">车辆数</span>
+            <input v-model="numVehicles" class="input input--coord" type="number" min="1" />
+          </label>
+          <label class="fleet-field">
+            <span class="fleet-field__label">单车最多站点</span>
+            <input v-model="vehicleCapacity" class="input input--coord" type="number" min="1" />
+          </label>
+        </div>
+      </section>
+
       <button class="btn-primary" type="button" :disabled="submitting" @click="onSubmit">
         {{ submitting ? '求解中…' : '生成方案' }}
       </button>
@@ -189,6 +223,10 @@ onMounted(async () => {
       <section v-if="result && result.status === 'success'" class="result">
         <div class="result__stats">
           <div class="stat">
+            <span class="stat__num">{{ result.routes.length }}</span>
+            <span class="stat__unit">条线路</span>
+          </div>
+          <div class="stat">
             <span class="stat__num">{{ formatKm(result.total_distance) }}</span>
             <span class="stat__unit">km 总里程</span>
           </div>
@@ -197,9 +235,19 @@ onMounted(async () => {
             <span class="stat__unit">min 总耗时</span>
           </div>
         </div>
-        <div class="result__order">
-          <span class="result__label">经停顺序</span>
-          <span class="result__chips">{{ result.route_order.join(' → ') }}</span>
+        <div
+          v-for="route in result.routes"
+          :key="route.vehicle_index"
+          class="vehicle"
+        >
+          <div class="vehicle__head">
+            <span class="vehicle__dot" :style="{ backgroundColor: vehicleColor(route.vehicle_index) }"></span>
+            <span class="vehicle__name">车 {{ route.vehicle_index + 1 }}</span>
+            <span class="vehicle__meta">
+              {{ route.load }} 站 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
+            </span>
+          </div>
+          <div class="vehicle__order">{{ route.route_order.join(' → ') }}</div>
         </div>
         <p v-if="result.unreachable_points.length" class="msg msg--warn">
           不可达起点已剔除：{{ result.unreachable_points.join('、') }}
@@ -365,6 +413,46 @@ onMounted(async () => {
   color: #4e5969;
 }
 .result__chips {
+  color: #1f2329;
+  word-break: break-all;
+}
+
+.fleet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #4e5969;
+}
+.fleet-field__label {
+  white-space: nowrap;
+}
+
+.vehicle {
+  margin-top: 12px;
+  font-size: 13px;
+}
+.vehicle__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.vehicle__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.vehicle__name {
+  font-weight: 600;
+  color: #1f2329;
+}
+.vehicle__meta {
+  color: #8a8f99;
+  font-size: 12px;
+}
+.vehicle__order {
   color: #1f2329;
   word-break: break-all;
 }

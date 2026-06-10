@@ -25,6 +25,14 @@ class RouteRequest(BaseModel):
     end_point: EndPoint
     optimize_type: Literal["time", "distance", "cost"] = Field(default="time", description="优化目标")
     max_solve_time: Optional[int] = Field(default=30, ge=1, le=300, description="OR-Tools 最大求解时间（秒）")
+    num_vehicles: Optional[int] = Field(
+        default=None, ge=1, le=50, description="车队车辆数；为空时取服务端默认值"
+    )
+    vehicle_capacity: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="单车容量（阶段一语义为单车最多经停站点数）；为空时取服务端默认值",
+    )
 
     @field_validator("start_points")
     @classmethod
@@ -50,11 +58,22 @@ class Segment(BaseModel):
     path: List[Any] = Field(default_factory=list, description="百度地图返回的路径轨迹点")
 
 
+class VehicleRoute(BaseModel):
+    """单辆车的子路线。"""
+    vehicle_index: int = Field(description="车辆序号，从 0 开始")
+    route_order: List[str] = Field(
+        default_factory=list, description="该车经停站点 ID 顺序，末位为企业终点"
+    )
+    total_distance: float = Field(default=0.0, description="该车总距离（米）")
+    total_duration: float = Field(default=0.0, description="该车总耗时（秒）")
+    segments: List[Segment] = Field(default_factory=list)
+    load: int = Field(default=0, description="该车承载量（阶段一为经停站点数）")
+
+
 class RouteResponse(BaseModel):
     status: Literal["success", "no_solution", "error"]
     message: str
-    route_order: List[str] = Field(default_factory=list, description="推荐站点 ID 顺序（含终点）")
-    total_distance: float = Field(default=0.0, description="总距离（米）")
-    total_duration: float = Field(default=0.0, description="总耗时（秒）")
-    segments: List[Segment] = Field(default_factory=list)
+    routes: List[VehicleRoute] = Field(default_factory=list, description="各车辆子路线")
+    total_distance: float = Field(default=0.0, description="车队总距离（米），各路线之和")
+    total_duration: float = Field(default=0.0, description="车队总耗时（秒），各路线之和")
     unreachable_points: List[str] = Field(default_factory=list, description="不可达点位 ID 列表")
