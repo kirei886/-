@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // 占位首页：证明 Vue + 路由骨架跑通。
-// 业务 UI（站点表单、规划结果、地图画线）待 MasterGo 设计稿确定后逐页实现。
+// 已落地「路线结果页」(/plan)，其余业务页待 MasterGo 设计稿逐页实现。
 </script>
 
 <template>
   <main class="home">
     <h1>企业班车路径规划</h1>
-    <p>前端脚手架已就绪，等待按设计稿实现页面。</p>
+    <p>前端脚手架已就绪，业务页面逐步实现中。</p>
+    <RouterLink class="entry" to="/plan">进入路线规划 →</RouterLink>
   </main>
 </template>
 
@@ -28,5 +29,15 @@
 
 .home p {
   color: #646a73;
+}
+
+.entry {
+  margin-top: 8px;
+  padding: 8px 18px;
+  border-radius: 6px;
+  background: #e1372e;
+  color: #fff;
+  font-size: 14px;
+  text-decoration: none;
 }
 </style>
