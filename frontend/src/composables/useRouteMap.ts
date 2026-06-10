@@ -19,8 +19,8 @@ export interface MapPoint {
   lng: number
 }
 
-// 主线红色，与设计稿强调色一致
-const ROUTE_STROKE_COLOR = '#e1372e'
+// 多车配色板：每辆车取一种颜色循环使用
+export const ROUTE_PALETTE = ['#e1372e', '#1f6fe5', '#15a06a', '#e6a700', '#8c52ff']
 const ROUTE_STROKE_WEIGHT = 6
 const ROUTE_STROKE_OPACITY = 0.85
 
@@ -78,9 +78,12 @@ export function useRouteMap() {
   }
 
   /**
-   * 绘制路线规划结果。
+   * 绘制多车路线规划结果。
    *
-   * @param response 后端规划响应（提供 route_order 顺序与 segments 轨迹）
+   * 每辆车一种配色：画该车分段 polyline、按车内经停顺序打点标号；
+   * 企业终点所有车共用，只画一次。
+   *
+   * @param response 后端规划响应（提供 routes 数组）
    * @param points   当前输入的所有点位（起点 + 终点），用于打点定位
    */
   function drawRoute(response: RouteResponse, points: MapPoint[]): void {
@@ -90,63 +93,95 @@ export function useRouteMap() {
 
     const pointMap = new Map(points.map((p) => [p.id, p]))
     const viewportPoints: any[] = []
+    // 终点 ID（各车 route_order 末位一致），统一最后画一次
+    let endId: string | null = null
 
-    // 1. 画分段 polyline。segment.path 为空时退化为 from→to 直线，避免断线。
-    for (const seg of response.segments) {
-      let linePoints: any[] = []
-      for (const pathStr of seg.path) {
-        linePoints = linePoints.concat(parsePath(pathStr))
-      }
-      if (linePoints.length === 0) {
-        const from = pointMap.get(seg.from_id)
-        const to = pointMap.get(seg.to_id)
-        if (from && to) {
-          linePoints = [
-            new BMapGL.Point(from.lng, from.lat),
-            new BMapGL.Point(to.lng, to.lat),
-          ]
+    response.routes.forEach((route, vIdx) => {
+      const color = ROUTE_PALETTE[vIdx % ROUTE_PALETTE.length]
+
+      // 1. 画该车分段 polyline。path 为空时退化为 from→to 直线，避免断线。
+      for (const seg of route.segments) {
+        let linePoints: any[] = []
+        for (const pathStr of seg.path) {
+          linePoints = linePoints.concat(parsePath(pathStr))
+        }
+        if (linePoints.length === 0) {
+          const from = pointMap.get(seg.from_id)
+          const to = pointMap.get(seg.to_id)
+          if (from && to) {
+            linePoints = [
+              new BMapGL.Point(from.lng, from.lat),
+              new BMapGL.Point(to.lng, to.lat),
+            ]
+          }
+        }
+        if (linePoints.length >= 2) {
+          const polyline = new BMapGL.Polyline(linePoints, {
+            strokeColor: color,
+            strokeWeight: ROUTE_STROKE_WEIGHT,
+            strokeOpacity: ROUTE_STROKE_OPACITY,
+          })
+          map.value.addOverlay(polyline)
+          viewportPoints.push(...linePoints)
         }
       }
-      if (linePoints.length >= 2) {
-        const polyline = new BMapGL.Polyline(linePoints, {
-          strokeColor: ROUTE_STROKE_COLOR,
-          strokeWeight: ROUTE_STROKE_WEIGHT,
-          strokeOpacity: ROUTE_STROKE_OPACITY,
+
+      // 2. 按车内经停顺序打点 + 标号。route_order 末位为终点（共用，跳过）。
+      const lastIndex = route.route_order.length - 1
+      route.route_order.forEach((id, index) => {
+        if (index === lastIndex) {
+          endId = id
+          return
+        }
+        const p = pointMap.get(id)
+        if (!p) return
+        const pt = new BMapGL.Point(p.lng, p.lat)
+        const marker = new BMapGL.Marker(pt)
+        map.value.addOverlay(marker)
+
+        const label = new BMapGL.Label(`车${vIdx + 1}-${index + 1}. ${p.name}`, {
+          position: pt,
+          offset: new BMapGL.Size(12, -6),
         })
-        map.value.addOverlay(polyline)
-        viewportPoints.push(...linePoints)
+        label.setStyle({
+          color: '#fff',
+          backgroundColor: color,
+          border: 'none',
+          borderRadius: '4px',
+          padding: '2px 6px',
+          fontSize: '12px',
+          whiteSpace: 'nowrap',
+        })
+        map.value.addOverlay(label)
+        viewportPoints.push(pt)
+      })
+    })
+
+    // 3. 企业终点：所有车共用，只画一次（灰黑标）。
+    if (endId) {
+      const p = pointMap.get(endId)
+      if (p) {
+        const pt = new BMapGL.Point(p.lng, p.lat)
+        map.value.addOverlay(new BMapGL.Marker(pt))
+        const label = new BMapGL.Label(`终. ${p.name}`, {
+          position: pt,
+          offset: new BMapGL.Size(12, -6),
+        })
+        label.setStyle({
+          color: '#fff',
+          backgroundColor: '#1f2329',
+          border: 'none',
+          borderRadius: '4px',
+          padding: '2px 6px',
+          fontSize: '12px',
+          whiteSpace: 'nowrap',
+        })
+        map.value.addOverlay(label)
+        viewportPoints.push(pt)
       }
     }
 
-    // 2. 按经停顺序打点 + 标号。route_order 末位为终点。
-    const lastIndex = response.route_order.length - 1
-    response.route_order.forEach((id, index) => {
-      const p = pointMap.get(id)
-      if (!p) return
-      const pt = new BMapGL.Point(p.lng, p.lat)
-      const isEnd = index === lastIndex
-      const marker = new BMapGL.Marker(pt)
-      map.value.addOverlay(marker)
-
-      const seq = isEnd ? '终' : String(index + 1)
-      const label = new BMapGL.Label(`${seq}. ${p.name}`, {
-        position: pt,
-        offset: new BMapGL.Size(12, -6),
-      })
-      label.setStyle({
-        color: '#fff',
-        backgroundColor: isEnd ? '#1f2329' : ROUTE_STROKE_COLOR,
-        border: 'none',
-        borderRadius: '4px',
-        padding: '2px 6px',
-        fontSize: '12px',
-        whiteSpace: 'nowrap',
-      })
-      map.value.addOverlay(label)
-      viewportPoints.push(pt)
-    })
-
-    // 3. 不可达起点用灰色标记区分。
+    // 4. 不可达起点用灰色标记区分。
     for (const id of response.unreachable_points) {
       const p = pointMap.get(id)
       if (!p) continue
@@ -168,7 +203,7 @@ export function useRouteMap() {
       viewportPoints.push(pt)
     }
 
-    // 4. 自动缩放到合适视野。
+    // 5. 自动缩放到合适视野。
     if (viewportPoints.length > 0) {
       map.value.setViewport(viewportPoints)
     }

@@ -29,6 +29,11 @@ jobs:
         env:
           BAIDU_MAP_AK: dummy-ak-for-import-check
 
+      - name: 单元测试
+        run: python -m pytest -q
+        env:
+          BAIDU_MAP_AK: dummy-ak-for-import-check
+
   frontend:
     name: 前端构建
     runs-on: ubuntu-latest
