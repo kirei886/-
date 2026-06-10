@@ -1,0 +1,38 @@
+name: Bug 报告
+description: 报告一个缺陷
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰简洁地描述这个 bug
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 调用 '...'
+        2. 传入参数 '...'
+        3. 看到错误 '...'
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 运行环境
+      description: 操作系统、Python / Node 版本、前端或后端
+      placeholder: |
+        - OS: Windows 11
+        - Python: 3.11
+        - Node: 20
+    validations:
+      required: false
