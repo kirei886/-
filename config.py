@@ -1,3 +1,13 @@
+import os
+
+from dotenv import load_dotenv
+
+# 加载项目根目录下的 .env（若存在）
+load_dotenv()
+
+# 百度地图 AK：从环境变量读取，不再由前端请求体传入
+BAIDU_MAP_AK: str = os.getenv("BAIDU_MAP_AK", "")
+
 # 成本权重（固定，不对外暴露）
 TIME_WEIGHT: float = 1.0
 DISTANCE_WEIGHT: float = 0.001  # 统一量纲，距离单位为米

@@ -24,7 +24,6 @@ class RouteRequest(BaseModel):
     start_points: List[StartPoint] = Field(..., min_length=1, description="起点列表，至少 1 个")
     end_point: EndPoint
     optimize_type: Literal["time", "distance", "cost"] = Field(default="time", description="优化目标")
-    baidu_map_ak: str = Field(..., min_length=1, description="百度地图 AK")
     max_solve_time: Optional[int] = Field(default=30, ge=1, le=300, description="OR-Tools 最大求解时间（秒）")
 
     @field_validator("start_points")

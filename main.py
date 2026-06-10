@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from baidu_map import InvalidAKError, MatrixBuildError, fetch_segment_detail
-from config import LARGE_COST
+from config import BAIDU_MAP_AK, LARGE_COST
 from cost_matrix import build_cost_matrix
 from models import RouteRequest, RouteResponse, Segment
 from solver import solve
@@ -27,7 +27,9 @@ def plan_route(request: RouteRequest) -> RouteResponse:
 
     接收多个上车点和一个企业终点，返回最优经过顺序、总耗时、总距离和分段路径详情。
     """
-    ak = request.baidu_map_ak
+    ak = BAIDU_MAP_AK
+    if not ak:
+        return _error_response("服务端未配置百度地图 AK，请在 .env 中设置 BAIDU_MAP_AK")
     max_solve_time = request.max_solve_time or 30
 
     # 起点/终点坐标列表
