@@ -20,6 +20,23 @@ class EndPoint(BaseModel):
     address: Optional[str] = None
     lat: float = Field(..., ge=-90.0, le=90.0, description="纬度")
     lng: float = Field(..., ge=-180.0, le=180.0, description="经度")
+    latest_arrival_time: Optional[str] = Field(
+        default=None,
+        description="企业最晚到达时刻 HH:MM（24 小时制，从当日 0 点算）；给定则启用时间窗约束，求解器保证各车在此前抵达终点",
+    )
+
+    @field_validator("latest_arrival_time")
+    @classmethod
+    def check_arrival_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        parts = v.split(":")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            raise ValueError("latest_arrival_time 需为 HH:MM 格式，如 09:00")
+        hh, mm = int(parts[0]), int(parts[1])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise ValueError("latest_arrival_time 时分超出范围（HH 0-23，MM 0-59）")
+        return v
 
 
 class VehicleType(BaseModel):
@@ -50,6 +67,12 @@ class RouteRequest(BaseModel):
         default=None,
         min_length=1,
         description="车型池（阶段三）：求解器据各车型座位数/台数/启用成本自动选型；与 vehicle_capacities 互斥",
+    )
+    service_time: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=3600,
+        description="每个上车点固定停靠时间（秒，全局统一，阶段四时间窗）；缺省取服务端默认。仅在终点设置 latest_arrival_time 时参与时间窗计算",
     )
 
     @field_validator("vehicle_capacities")
@@ -101,6 +124,10 @@ class Segment(BaseModel):
     distance: float = Field(description="分段距离（米）")
     duration: float = Field(description="分段耗时（秒）")
     path: List[Any] = Field(default_factory=list, description="百度地图返回的路径轨迹点")
+    arrival_time: Optional[int] = Field(
+        default=None,
+        description="到达 to_id 的预计时刻（当日秒数，前端转 HH:MM，阶段四时间窗）；未启用时间窗时为 null",
+    )
 
 
 class VehicleRoute(BaseModel):
@@ -116,6 +143,10 @@ class VehicleRoute(BaseModel):
     capacity: int = Field(default=0, description="该车座位数（阶段三体现自动选中的车型容量）")
     fixed_cost: int = Field(
         default=0, description="该车启用成本，单位与优化目标一致；阶段二回退路径为 0"
+    )
+    departure_time: Optional[int] = Field(
+        default=None,
+        description="该车发车时刻（当日秒数，前端转 HH:MM，阶段四时间窗）；倒推自终点最晚到达，未启用时间窗时为 null",
     )
 
 

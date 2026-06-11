@@ -28,6 +28,8 @@ export interface EndPoint {
   address?: string
   lat: number
   lng: number
+  /** 最晚到达时刻 HH:MM（24 小时制）；给定则启用时间窗约束 */
+  latest_arrival_time?: string
 }
 
 /** 车型（车型池，阶段三自动选型） */
@@ -55,6 +57,8 @@ export interface RouteRequest {
   vehicle_capacities?: number[]
   /** 车型池（阶段三）：求解器据座位数/台数/启用成本自动选型；与 vehicle_capacities 互斥 */
   vehicle_types?: VehicleType[]
+  /** 每个上车点固定停靠时间（秒，全局统一，阶段四时间窗）；缺省取服务端默认 */
+  service_time?: number
 }
 
 /** 单段路径 */
@@ -70,6 +74,8 @@ export interface Segment {
    * 每个元素为 "lng,lat;lng,lat;..." 格式的字符串（bd09ll 坐标系）。
    */
   path: string[]
+  /** 到达 to_id 的预计时刻（当日秒数，前端转 HH:MM，阶段四时间窗）；未启用时间窗时为 null */
+  arrival_time?: number | null
 }
 
 /** 单辆车的子路线 */
@@ -89,6 +95,8 @@ export interface VehicleRoute {
   capacity: number
   /** 该车启用成本，单位与优化目标一致；阶段二回退路径为 0 */
   fixed_cost: number
+  /** 该车发车时刻（当日秒数，前端转 HH:MM，阶段四时间窗）；未启用时间窗时为 null */
+  departure_time?: number | null
 }
 
 /** 规划响应体 */

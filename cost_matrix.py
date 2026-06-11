@@ -32,6 +32,13 @@ class CostMatrixResult(NamedTuple):
     # 索引 0 对应 end_point（depot），索引 1~M 对应 reachable_starts
     route_data: List[List[RouteData]]
 
+    # 行驶时间矩阵（秒，整数），与 cost_matrix 同结构/同索引（阶段四：时间窗）。
+    # 复用 route_data 的 duration，无需额外请求百度。语义与成本矩阵一致：
+    #   depot → 任意上车点 = 0（首段不计时，等价「从任意起点出发」）
+    #   上车点 → 终点 / 上车点间 = 真实行驶秒数
+    #   不可达腿 = LARGE_COST
+    time_matrix: List[List[int]]
+
 
 def _compute_cost(duration: float, distance: float, optimize_type: str) -> float:
     """根据优化目标计算单段成本。"""
@@ -125,26 +132,37 @@ def build_cost_matrix(
     cost_matrix: List[List[int]] = [
         [0] * total_nodes for _ in range(total_nodes)
     ]
+    # 行驶时间矩阵（秒，整数），与成本矩阵同结构/同索引（阶段四：时间窗）。
+    # 复用 route_data 的 duration，语义对齐成本：depot 出弧=0、不可达=LARGE_COST。
+    time_matrix: List[List[int]] = [
+        [0] * total_nodes for _ in range(total_nodes)
+    ]
 
     for i in range(total_nodes):
         for j in range(total_nodes):
             if i == j:
                 cost_matrix[i][j] = 0
+                time_matrix[i][j] = 0
             elif i == 0:
-                # depot → 任意上车点：免费（空驶，等价「从任意起点出发」）
+                # depot → 任意上车点：免费（空驶，等价「从任意起点出发」）；
+                # 时间同理为 0（首段不计时），约束的是首个上车点→…→公司的总时长。
                 cost_matrix[i][j] = 0
+                time_matrix[i][j] = 0
             else:
                 rd = route_data[i][j]
                 if not rd.reachable:
                     cost_matrix[i][j] = LARGE_COST
+                    time_matrix[i][j] = LARGE_COST
                 else:
                     cost_matrix[i][j] = _to_int_cost(
                         _compute_cost(rd.duration, rd.distance, optimize_type)
                     )
+                    time_matrix[i][j] = int(round(rd.duration))
 
     return CostMatrixResult(
         cost_matrix=cost_matrix,
         reachable_indices=reachable_indices,
         unreachable_indices=unreachable_indices,
         route_data=route_data,
+        time_matrix=time_matrix,
     )

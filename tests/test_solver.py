@@ -337,3 +337,85 @@ def test_short_time_limit_keeps_quality():
     assert short.success and long.success
     # solution_limit 在两个时限下都先触发，解质量应一致
     assert total_cost(short.routes) == total_cost(long.routes)
+
+
+# --- 阶段四：时间窗约束 ---
+# 复用 _build_matrix 作为时间矩阵：depot 出弧=0，上车点间/到终点=100 秒，对角=0。
+
+
+def test_time_window_feasible_when_loose():
+    """宽松最晚到达 → 时间窗可行，覆盖全部站点。"""
+    m = 3
+    matrix = _build_matrix(m)
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=2,
+        demands=[0] + [1] * m,
+        vehicle_capacities=[3, 3],
+        max_solve_time=5,
+        time_matrix=matrix,            # 时间矩阵=成本矩阵（秒）
+        service_times=[0, 30, 30, 30],  # 每站停靠 30 秒
+        latest_arrival=100_000,        # 极宽松
+    )
+    assert result.success
+    pickups = _all_pickups(result.routes)
+    assert sorted(pickups) == list(range(m))
+
+
+def test_time_window_infeasible_when_tight():
+    """最晚到达小于最快单段行驶时间 → 无可行解。"""
+    m = 3
+    matrix = _build_matrix(m)
+    # 任一上车点→终点都要 100 秒，latest_arrival=50 必然超窗。
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=3,
+        demands=[0] + [1] * m,
+        vehicle_capacities=[1, 1, 1],
+        max_solve_time=5,
+        time_matrix=matrix,
+        service_times=[0, 0, 0, 0],
+        latest_arrival=50,
+    )
+    assert not result.success
+
+
+def test_service_time_pushes_over_window():
+    """同一窗口下，加大停靠时间使总时长超窗 → 由可行变无解（锁住 service_time 真进时间维）。
+
+    单站单车：行驶 100 秒。窗口 200 秒。
+    停靠 50 秒 → 100+50=150 ≤ 200 可行；停靠 150 秒 → 100+150=250 > 200 无解。
+    """
+    m = 1
+    matrix = _build_matrix(m)
+    base = dict(
+        num_starts=m,
+        num_vehicles=1,
+        demands=[0, 1],
+        vehicle_capacities=[5],
+        max_solve_time=5,
+        time_matrix=matrix,
+        latest_arrival=200,
+    )
+    ok = solve(matrix, service_times=[0, 50], **base)
+    bad = solve(matrix, service_times=[0, 150], **base)
+    assert ok.success
+    assert not bad.success
+
+
+def test_time_window_default_none_regression():
+    """不传时间窗参数 → 退化为纯 CVRP，求解成功覆盖全部（既有行为零改动）。"""
+    m = 4
+    matrix = _build_matrix(m)
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=2,
+        demands=[0] + [1] * m,
+        vehicle_capacities=[3, 3],
+        max_solve_time=5,
+    )
+    assert result.success
+    assert sorted(_all_pickups(result.routes)) == list(range(m))
