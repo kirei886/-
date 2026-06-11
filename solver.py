@@ -12,7 +12,7 @@ OR-Tools 多车路径求解器（CVRP）。
 上车点→公司、上车点间为真实成本。
 """
 
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Optional
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
@@ -30,6 +30,9 @@ class SolveResult(NamedTuple):
     # 内层列表为该车按访问序经停的可达起点下标（0~M-1，不含 depot）。
     # 空车（未分配任何站点）不输出。仅在 success=True 时有效。
     routes: List[List[int]]
+    # 与 routes 等长，记录每条非空路线对应的 OR-Tools 车辆下标（0~num_vehicles-1），
+    # 供调用方反查该车的座位数 / 固定成本（阶段三车型池选型）。
+    used_vehicle_indices: List[int]
     # OR-Tools 原始状态码
     raw_status: int
     # 状态说明
@@ -43,6 +46,7 @@ def solve(
     demands: List[int],
     vehicle_capacities: List[int],
     max_solve_time: int,
+    vehicle_fixed_costs: Optional[List[int]] = None,
 ) -> SolveResult:
     """
     使用 OR-Tools 求解多车带容量约束的路径规划。
@@ -53,20 +57,28 @@ def solve(
         num_starts:  可达起点数量（M）
         num_vehicles: 车队车辆数
         demands:     各节点需求，长度 = 1+num_starts，demands[0]（depot）应为 0，
-                     阶段一每个上车点需求为 1
+                     阶段二每个上车点需求为该站乘车人数
         vehicle_capacities: 各车辆容量，长度 = num_vehicles
         max_solve_time: 最大求解时间（秒）
+        vehicle_fixed_costs: 各车辆固定启用成本（已与弧成本同标度的整数，长度 = num_vehicles）；
+                     仅当车辆被启用（路线非空）时收取，用于阶段三车型池自动选型。
+                     缺省（None）时全 0，等价阶段二行为。
 
     Returns:
-        SolveResult，routes 为各车经停的可达起点下标（0~M-1）列表
+        SolveResult，routes 为各车经停的可达起点下标（0~M-1）列表，
+        used_vehicle_indices 为对应车辆下标。
 
     Notes:
         - 上车点为强制访问（不加 Disjunction），容量可行时默认必访；
           被迫走 LARGE_COST 死路的情况由调用方做相邻连通性二次校验拦截。
         - depot（节点 0）对每辆车都是起点兼终点，不受「只访问一次」约束，
           因此可承载多辆车收尾。
+        - 固定成本仅对被启用车辆计入；depot→上车点弧成本为 0，
+          故空车整条路线成本为 0、不收固定成本，求解器据此自动决定启用哪些车。
     """
     total_nodes = 1 + num_starts  # depot + 可达起点
+    if vehicle_fixed_costs is None:
+        vehicle_fixed_costs = [0] * num_vehicles
 
     # --- 建模 ---
     manager = pywrapcp.RoutingIndexManager(total_nodes, num_vehicles, 0)
@@ -94,6 +106,11 @@ def solve(
         True,                 # 容量从 0 起算
         "Capacity",
     )
+
+    # 各车固定启用成本（仅启用车辆计入）——阶段三车型池自动选型的核心。
+    for v in range(num_vehicles):
+        if vehicle_fixed_costs[v]:
+            model.SetFixedCostOfVehicle(vehicle_fixed_costs[v], v)
 
     # --- 求解参数 ---
     params = pywrapcp.DefaultRoutingSearchParameters()
@@ -124,6 +141,7 @@ def solve(
         return SolveResult(
             success=False,
             routes=[],
+            used_vehicle_indices=[],
             raw_status=raw_status,
             message=f"OR-Tools 求解失败，状态：{status_name}",
         )
@@ -132,6 +150,7 @@ def solve(
     # 每辆车：遍历 Start(v)..IsEnd，收集途经的非 depot 节点。
     # OR-Tools 节点 k（1~M）对应可达起点下标 k-1。空车跳过不输出。
     routes: List[List[int]] = []
+    used_vehicle_indices: List[int] = []
     for v in range(num_vehicles):
         pickups: List[int] = []
         routing_idx = model.Start(v)
@@ -142,11 +161,13 @@ def solve(
             routing_idx = solution.Value(model.NextVar(routing_idx))
         if pickups:
             routes.append(pickups)
+            used_vehicle_indices.append(v)
 
     quality = "最优解" if raw_status == _STATUS_OPTIMAL else "可行解"
     return SolveResult(
         success=True,
         routes=routes,
+        used_vehicle_indices=used_vehicle_indices,
         raw_status=raw_status,
         message=f"求解成功（{quality}），共 {len(routes)} 条线路",
     )

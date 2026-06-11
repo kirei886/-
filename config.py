@@ -21,6 +21,11 @@ DEFAULT_MAX_SOLVE_TIME: int = 30
 DEFAULT_NUM_VEHICLES: int = 3
 DEFAULT_VEHICLE_CAPACITY: int = 20
 
+# 车辆默认固定启用成本(阶段三:车型池自动选型)
+# 单位与优化目标一致(time=秒/distance=米/cost=加权值)。回退路径(仅给 vehicle_capacities
+# 或走默认)不收固定成本,保持阶段二行为;仅 vehicle_types 显式给定时按车型 fixed_cost 计入。
+DEFAULT_VEHICLE_FIXED_COST: int = 0
+
 # 百度地图 API
 BAIDU_MAP_ROUTE_MATRIX_URL = "https://api.map.baidu.com/routematrix/v2/driving"
 BAIDU_MAP_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"

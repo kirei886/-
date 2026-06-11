@@ -186,3 +186,73 @@ def test_multi_passenger_demand():
     for r in result.routes:
         route_demand = sum(demands[s + 1] for s in r)
         assert route_demand <= max(capacities)
+
+
+def test_fixed_cost_suppresses_extra_vehicles():
+    """高固定启用成本 → 求解器倾向少开车：容量足够时把 3 站并到 1 辆车。
+
+    本矩阵下弧成本与拆分方式无关（每个上车点恰好贡献一条 100 成本出弧），
+    故仅固定成本影响开车数。两辆车容量各 3、固定成本高 → 用 1 辆即可覆盖 3 站。
+    """
+    m = 3
+    matrix = _build_matrix(m)
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=2,
+        demands=[0] + [1] * m,
+        vehicle_capacities=[3, 3],
+        max_solve_time=5,
+        vehicle_fixed_costs=[5000, 5000],
+    )
+
+    assert result.success
+    # 高固定成本下应只启用 1 辆车
+    assert len(result.routes) == 1
+    assert len(result.used_vehicle_indices) == 1
+    assert sorted(_all_pickups(result.routes)) == list(range(m))
+
+
+def test_vehicle_type_pool_selects_cheaper():
+    """车型池选型：大车(容量 5、固定成本低) vs 两辆小车(容量 2、固定成本高)。
+
+    3 站总需求 3，大车单辆即可承载且固定成本远低 → 求解器应只选大车(下标 0)。
+    """
+    m = 3
+    matrix = _build_matrix(m)
+    capacities = [5, 2, 2]
+    fixed_costs = [100, 10000, 10000]
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=len(capacities),
+        demands=[0] + [1] * m,
+        vehicle_capacities=capacities,
+        max_solve_time=5,
+        vehicle_fixed_costs=fixed_costs,
+    )
+
+    assert result.success
+    # 只启用 1 辆，且是低成本大车（下标 0、容量 5）
+    assert result.used_vehicle_indices == [0]
+    chosen = result.used_vehicle_indices[0]
+    assert capacities[chosen] == 5
+    assert sorted(_all_pickups(result.routes)) == list(range(m))
+
+
+def test_fixed_costs_default_none_regression():
+    """vehicle_fixed_costs 缺省（None）→ 等价阶段二行为，求解成功覆盖全部。"""
+    m = 4
+    matrix = _build_matrix(m)
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=2,
+        demands=[0] + [1] * m,
+        vehicle_capacities=[3, 3],
+        max_solve_time=5,
+    )
+
+    assert result.success
+    assert len(result.used_vehicle_indices) == len(result.routes)
+    assert sorted(_all_pickups(result.routes)) == list(range(m))

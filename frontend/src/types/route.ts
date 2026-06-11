@@ -30,6 +30,16 @@ export interface EndPoint {
   lng: number
 }
 
+/** 车型（车型池，阶段三自动选型） */
+export interface VehicleType {
+  /** 该车型座位数，≥1 */
+  seats: number
+  /** 该车型可用台数，≥1 */
+  count: number
+  /** 单辆启用成本，单位与优化目标一致（time=秒/distance=米/cost=加权值），默认 0 */
+  fixed_cost?: number
+}
+
 /** 规划请求体 */
 export interface RouteRequest {
   /** 起点列表，至少 1 个 */
@@ -43,6 +53,8 @@ export interface RouteRequest {
   num_vehicles?: number
   /** 各车座位数数组（混合车型，每元素 ≥1）；为空时取服务端默认值 */
   vehicle_capacities?: number[]
+  /** 车型池（阶段三）：求解器据座位数/台数/启用成本自动选型；与 vehicle_capacities 互斥 */
+  vehicle_types?: VehicleType[]
 }
 
 /** 单段路径 */
@@ -73,6 +85,10 @@ export interface VehicleRoute {
   segments: Segment[]
   /** 该车承载总人数（各经停站点乘车人数之和） */
   load: number
+  /** 该车座位数（阶段三体现自动选中的车型容量） */
+  capacity: number
+  /** 该车启用成本，单位与优化目标一致；阶段二回退路径为 0 */
+  fixed_cost: number
 }
 
 /** 规划响应体 */
