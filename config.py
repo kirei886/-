@@ -13,7 +13,9 @@ TIME_WEIGHT: float = 1.0
 DISTANCE_WEIGHT: float = 0.001  # 统一量纲，距离单位为米
 
 # OR-Tools 默认最大求解时间（秒）
-DEFAULT_MAX_SOLVE_TIME: int = 30
+# 求解器加了 solution_limit 收敛即停（见 solver.py），time_limit 退化为兜底；
+# 班车规模问题毫秒级收敛，5 秒足够覆盖较大问题，仅防极端规模失控。
+DEFAULT_MAX_SOLVE_TIME: int = 5
 
 # 车队默认配置(阶段二:混合车型,各车独立座位数)
 # 容量语义为「座位数」,每站需求 = passenger_count(缺省 1 人)。
