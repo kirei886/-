@@ -8,11 +8,13 @@
 import { onMounted, ref } from 'vue'
 import { planRoute } from '@/api/route'
 import { useRouteMap, ROUTE_PALETTE, type MapPoint } from '@/composables/useRouteMap'
+import { useVehiclePresets } from '@/composables/useVehiclePresets'
 import type {
   OptimizeType,
   RouteRequest,
   RouteResponse,
   StartPoint,
+  VehicleType,
 } from '@/types/route'
 
 // 左栏表单行：坐标用字符串便于输入，提交时转 number
@@ -44,8 +46,22 @@ const endPoint = ref<PointForm>({
   passengers: '',
 })
 const optimizeType = ref<OptimizeType>('time')
-// 车队参数（阶段二：混合车型，逐车座位数列表，直接对应 vehicle_capacities）
-const vehicleCapacities = ref<string[]>(['20', '20', '20'])
+// 车队（阶段三：车型池，座位数 / 台数 / 启用成本；求解器据此自动选型）
+// 中间态用字符串便于输入，提交时转 number
+interface VehicleTypeForm {
+  seats: string
+  count: string
+  fixedCost: string
+}
+const vehicleTypes = ref<VehicleTypeForm[]>([
+  { seats: '40', count: '1', fixedCost: '0' },
+  { seats: '11', count: '3', fixedCost: '500' },
+])
+
+// 车型池预设（localStorage 持久化）
+const { presets, save: savePreset, remove: removePreset, get: getPreset } = useVehiclePresets()
+const selectedPreset = ref<string>('')
+const presetNameInput = ref<string>('')
 
 const mapEl = ref<HTMLElement | null>(null)
 const { initMap, drawRoute, scriptError } = useRouteMap()
@@ -66,11 +82,82 @@ function removeStart(index: number): void {
   startPoints.value.splice(index, 1)
 }
 
-function addVehicle(): void {
-  vehicleCapacities.value.push('20')
+function addVehicleType(): void {
+  vehicleTypes.value.push({ seats: '20', count: '1', fixedCost: '0' })
 }
-function removeVehicle(index: number): void {
-  vehicleCapacities.value.splice(index, 1)
+function removeVehicleType(index: number): void {
+  vehicleTypes.value.splice(index, 1)
+}
+
+/**
+ * 校验并解析车型池为请求所需的 VehicleType[]；非法时设 errorMsg 并返回 null。
+ * 供 buildRequest 与 saveCurrentPreset 共用。
+ */
+function parseVehicleTypes(): VehicleType[] | null {
+  if (vehicleTypes.value.length === 0) {
+    errorMsg.value = '至少需要 1 种车型'
+    return null
+  }
+  const parsed: VehicleType[] = []
+  for (const vt of vehicleTypes.value) {
+    const seats = Number(vt.seats)
+    const count = Number(vt.count)
+    if (!Number.isInteger(seats) || seats < 1) {
+      errorMsg.value = '车型座位数需为不小于 1 的整数'
+      return null
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      errorMsg.value = '车型台数需为不小于 1 的整数'
+      return null
+    }
+    // 启用成本留空 → 0；填了须为非负整数
+    let fixedCost = 0
+    const raw = vt.fixedCost.trim()
+    if (raw !== '') {
+      const c = Number(raw)
+      if (!Number.isInteger(c) || c < 0) {
+        errorMsg.value = '车型启用成本需为非负整数'
+        return null
+      }
+      fixedCost = c
+    }
+    parsed.push({ seats, count, fixed_cost: fixedCost })
+  }
+  return parsed
+}
+
+/** 载入选中的预设到车型池表单 */
+function loadPreset(name: string): void {
+  if (!name) return
+  const preset = getPreset(name)
+  if (!preset) return
+  vehicleTypes.value = preset.types.map((t) => ({
+    seats: String(t.seats),
+    count: String(t.count),
+    fixedCost: String(t.fixed_cost ?? 0),
+  }))
+}
+
+/** 把当前车型池另存为具名预设（先校验，通过才存） */
+function saveCurrentPreset(): void {
+  errorMsg.value = null
+  const name = presetNameInput.value.trim()
+  if (!name) {
+    errorMsg.value = '请输入预设名称'
+    return
+  }
+  const parsed = parseVehicleTypes()
+  if (!parsed) return
+  savePreset(name, parsed)
+  selectedPreset.value = name
+  presetNameInput.value = ''
+}
+
+/** 删除当前选中的预设 */
+function removeSelectedPreset(): void {
+  if (!selectedPreset.value) return
+  removePreset(selectedPreset.value)
+  selectedPreset.value = ''
 }
 
 // 米 → 公里，保留 1 位
@@ -115,24 +202,15 @@ function buildRequest(): RouteRequest | null {
     errorMsg.value = '终点名称或坐标无效'
     return null
   }
-  if (vehicleCapacities.value.length === 0) {
-    errorMsg.value = '至少需要 1 辆车'
+  const vehicle_types = parseVehicleTypes()
+  if (!vehicle_types) {
     return null
-  }
-  const capacities: number[] = []
-  for (const c of vehicleCapacities.value) {
-    const cap = Number(c)
-    if (!Number.isInteger(cap) || cap < 1) {
-      errorMsg.value = '每辆车座位数需为不小于 1 的整数'
-      return null
-    }
-    capacities.push(cap)
   }
   return {
     start_points: parsed,
     end_point: { id: endPoint.value.id, name: endPoint.value.name.trim(), lat: eLat, lng: eLng },
     optimize_type: optimizeType.value,
-    vehicle_capacities: capacities,
+    vehicle_types,
   }
 }
 
@@ -230,27 +308,71 @@ onMounted(async () => {
 
       <section class="field-group">
         <div class="field-group__head">
-          <span>车队（各车座位数）</span>
-          <button class="btn-text" type="button" @click="addVehicle">+ 添加</button>
+          <span>车队（车型池）</span>
+          <button class="btn-text" type="button" @click="addVehicleType">+ 添加</button>
         </div>
-        <div v-for="(_, i) in vehicleCapacities" :key="i" class="point-row">
-          <span class="vehicle-row__label">车 {{ i + 1 }}</span>
+        <div v-for="(vt, i) in vehicleTypes" :key="i" class="point-row">
+          <span class="vehicle-row__label">车型 {{ i + 1 }}</span>
           <input
-            v-model="vehicleCapacities[i]"
-            class="input input--name"
+            v-model="vt.seats"
+            class="input input--num"
             type="number"
             min="1"
             placeholder="座位数"
+            title="该车型座位数"
+          />
+          <input
+            v-model="vt.count"
+            class="input input--num"
+            type="number"
+            min="1"
+            placeholder="台数"
+            title="该车型可用台数"
+          />
+          <input
+            v-model="vt.fixedCost"
+            class="input input--num"
+            type="number"
+            min="0"
+            placeholder="启用成本"
+            title="单辆启用成本，单位随优化目标（时间=秒/距离=米/成本=加权值），留空为 0"
           />
           <button
             class="btn-remove"
             type="button"
-            :disabled="vehicleCapacities.length <= 1"
+            :disabled="vehicleTypes.length <= 1"
             title="删除"
-            @click="removeVehicle(i)"
+            @click="removeVehicleType(i)"
           >
             ×
           </button>
+        </div>
+        <!-- 预设：车型池跨会话复用 -->
+        <div class="preset-bar">
+          <select
+            v-model="selectedPreset"
+            class="input input--preset"
+            @change="loadPreset(selectedPreset)"
+          >
+            <option value="">选择预设…</option>
+            <option v-for="p in presets" :key="p.name" :value="p.name">{{ p.name }}</option>
+          </select>
+          <button
+            v-if="selectedPreset"
+            class="btn-text"
+            type="button"
+            @click="removeSelectedPreset"
+          >
+            删除
+          </button>
+        </div>
+        <div class="preset-bar">
+          <input
+            v-model="presetNameInput"
+            class="input input--preset"
+            placeholder="预设名称"
+          />
+          <button class="btn-text" type="button" @click="saveCurrentPreset">保存预设</button>
         </div>
       </section>
 
@@ -467,6 +589,17 @@ onMounted(async () => {
   width: 40px;
   font-size: 13px;
   color: #4e5969;
+}
+
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.input--preset {
+  flex: 1;
+  min-width: 0;
 }
 
 .vehicle {
