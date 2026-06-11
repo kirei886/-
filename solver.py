@@ -53,6 +53,9 @@ def solve(
     vehicle_capacities: List[int],
     max_solve_time: int,
     vehicle_fixed_costs: Optional[List[int]] = None,
+    time_matrix: Optional[List[List[int]]] = None,
+    service_times: Optional[List[int]] = None,
+    latest_arrival: Optional[int] = None,
 ) -> SolveResult:
     """
     使用 OR-Tools 求解多车带容量约束的路径规划。
@@ -69,6 +72,12 @@ def solve(
         vehicle_fixed_costs: 各车辆固定启用成本（已与弧成本同标度的整数，长度 = num_vehicles）；
                      仅当车辆被启用（路线非空）时收取，用于阶段三车型池自动选型。
                      缺省（None）时全 0，等价阶段二行为。
+        time_matrix: 行驶时间矩阵（秒，整数），与 cost_matrix 同结构/同索引（阶段四：时间窗）。
+                     depot 出弧=0、不可达=LARGE_COST。
+        service_times: 各节点停靠时间（秒），长度 = 1+num_starts，depot（节点 0）应为 0。
+        latest_arrival: 终点最晚到达时刻（秒，从当日 0 点起算）。
+                     仅当 time_matrix 与 latest_arrival 同时给定时才建时间维度并约束；
+                     任一缺省即退化为纯 CVRP（等价阶段三行为，现有用例零改动）。
 
     Returns:
         SolveResult，routes 为各车经停的可达起点下标（0~M-1）列表，
@@ -81,10 +90,16 @@ def solve(
           因此可承载多辆车收尾。
         - 固定成本仅对被启用车辆计入；depot→上车点弧成本为 0，
           故空车整条路线成本为 0、不收固定成本，求解器据此自动决定启用哪些车。
+        - 时间窗：到达 j 的时间累积 = 行驶 time_matrix[i][j] + 在 j 停靠 service_times[j]；
+          depot 出弧时间为 0（首段不计时），约束每辆车终点累积时间 ≤ latest_arrival。
     """
     total_nodes = 1 + num_starts  # depot + 可达起点
     if vehicle_fixed_costs is None:
         vehicle_fixed_costs = [0] * num_vehicles
+    # 时间窗仅在时间矩阵与最晚到达同时给定时启用。
+    enable_time_window = time_matrix is not None and latest_arrival is not None
+    if service_times is None:
+        service_times = [0] * total_nodes
 
     # --- 建模 ---
     manager = pywrapcp.RoutingIndexManager(total_nodes, num_vehicles, 0)
@@ -117,6 +132,30 @@ def solve(
     for v in range(num_vehicles):
         if vehicle_fixed_costs[v]:
             model.SetFixedCostOfVehicle(vehicle_fixed_costs[v], v)
+
+    # 时间维度（阶段四：时间窗）。仅在 time_matrix 与 latest_arrival 同时给定时建立。
+    if enable_time_window:
+        # 到达 j 的时间累积 = 行驶 time_matrix[i][j] + 在 j 停靠 service_times[j]。
+        # depot 出弧 time_matrix[0][j]=0（首段不计时），depot 自身 service=0。
+        def time_callback(from_routing_idx: int, to_routing_idx: int) -> int:
+            i = manager.IndexToNode(from_routing_idx)
+            j = manager.IndexToNode(to_routing_idx)
+            return time_matrix[i][j] + service_times[j]
+
+        time_transit_idx = model.RegisterTransitCallback(time_callback)
+        # horizon 取「最晚到达」即可作为累积上界（终点不得晚于它）。
+        model.AddDimension(
+            time_transit_idx,
+            0,                 # slack=0：不建模在站等待（本方案假设员工已在站候车）
+            latest_arrival,    # 累积时间上界 = 最晚到达秒数
+            True,              # 出发累积量固定为 0（各车从 0 起计耗时）
+            "Time",
+        )
+        time_dim = model.GetDimensionOrDie("Time")
+        # 约束每辆车终点（End=depot）的累积时间 ≤ 最晚到达。
+        # fix_start_cumul_to_zero=True 使出发=0，故 End 累积量即该车全程（行驶+停靠）时间。
+        for v in range(num_vehicles):
+            time_dim.CumulVar(model.End(v)).SetRange(0, latest_arrival)
 
     # --- 求解参数 ---
     params = pywrapcp.DefaultRoutingSearchParameters()

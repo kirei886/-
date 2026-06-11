@@ -28,6 +28,10 @@ DEFAULT_VEHICLE_CAPACITY: int = 20
 # 或走默认)不收固定成本,保持阶段二行为;仅 vehicle_types 显式给定时按车型 fixed_cost 计入。
 DEFAULT_VEHICLE_FIXED_COST: int = 0
 
+# 每个上车点默认停靠时间(秒,阶段四:时间窗)
+# 车到站开门、员工上车、关门的固定耗时。请求未传 service_time 且启用时间窗时取此值。
+DEFAULT_SERVICE_TIME: int = 180
+
 # 百度地图 API
 BAIDU_MAP_ROUTE_MATRIX_URL = "https://api.map.baidu.com/routematrix/v2/driving"
 BAIDU_MAP_DIRECTION_URL = "https://api.map.baidu.com/direction/v2/driving"

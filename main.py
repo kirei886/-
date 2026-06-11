@@ -8,6 +8,7 @@ from config import (
     BAIDU_MAP_AK,
     DEFAULT_MAX_SOLVE_TIME,
     DEFAULT_NUM_VEHICLES,
+    DEFAULT_SERVICE_TIME,
     DEFAULT_VEHICLE_CAPACITY,
     LARGE_COST,
 )
@@ -24,6 +25,17 @@ app = FastAPI(
 
 def _error_response(message: str) -> RouteResponse:
     return RouteResponse(status="error", message=message)
+
+
+def _parse_hhmm_to_seconds(value: "str | None") -> "int | None":
+    """把 HH:MM（24 小时制）解析为当日 0 点起的秒数；空/None 返回 None。
+
+    格式已由 models.EndPoint 校验，这里只做转换。
+    """
+    if not value:
+        return None
+    hh, mm = value.split(":")
+    return int(hh) * 3600 + int(mm) * 60
 
 
 @app.post("/api/v1/route/plan", response_model=RouteResponse)
@@ -115,6 +127,21 @@ def plan_route(request: RouteRequest) -> RouteResponse:
                 unreachable_points=unreachable_ids,
             )
 
+    # --- 步骤1.6：时间窗参数（阶段四） ---
+    # 终点设了 latest_arrival_time(HH:MM) 才启用时间窗。
+    # 时间矩阵复用成本矩阵构建时一并算好的 time_matrix（秒），零额外请求。
+    latest_arrival_sec = _parse_hhmm_to_seconds(request.end_point.latest_arrival_time)
+    enable_time_window = latest_arrival_sec is not None
+    time_matrix = None
+    service_times = None
+    service_time_sec = (
+        request.service_time if request.service_time is not None else DEFAULT_SERVICE_TIME
+    )
+    if enable_time_window:
+        time_matrix = matrix_result.time_matrix
+        # 各节点停靠：depot(0) 不停靠，可达上车点统一 service_time_sec。
+        service_times = [0] + [service_time_sec] * num_starts
+
     # --- 步骤2：OR-Tools 多车求解 ---
     # 节点 0 = depot（终点），1~M = 可达起点；需求 depot=0、每站点=该站乘车人数
 
@@ -126,12 +153,22 @@ def plan_route(request: RouteRequest) -> RouteResponse:
         vehicle_capacities=vehicle_capacities,
         max_solve_time=max_solve_time,
         vehicle_fixed_costs=vehicle_fixed_costs_scaled,
+        time_matrix=time_matrix,
+        service_times=service_times,
+        latest_arrival=latest_arrival_sec,
     )
 
     if not solve_result.success:
+        # 启用时间窗时给更具体的无解提示。
+        msg = solve_result.message
+        if enable_time_window:
+            msg = (
+                f"{msg}（已启用最晚到达 {request.end_point.latest_arrival_time} 约束，"
+                f"可尝试放宽到达时刻、减少经停或增加车辆）"
+            )
         return RouteResponse(
             status="no_solution",
-            message=solve_result.message,
+            message=msg,
             unreachable_points=unreachable_ids,
         )
 
@@ -212,6 +249,24 @@ def plan_route(request: RouteRequest) -> RouteResponse:
                 path=path,
             ))
 
+        # 时间窗：倒推发车并回填各段到达时刻（阶段四）。
+        # 全程总时长 = 各段行驶 + 各上车点停靠（终点不停靠）；
+        # 倒推发车 = 最晚到达 - 全程总时长（该车恰好准点到公司）。
+        departure_time = None
+        if enable_time_window:
+            num_pickups = len(pickups)
+            total_service = service_time_sec * num_pickups
+            total_travel = sum(seg.duration for seg in segments)
+            departure_time = int(round(latest_arrival_sec - total_travel - total_service))
+            # 逐段累加：到达某站 = 发车 + 已走行驶 + 已在之前各站停靠。
+            cursor = float(departure_time)
+            for seg_idx, seg in enumerate(segments):
+                cursor += seg.duration
+                seg.arrival_time = int(round(cursor))
+                # 到达该站后停靠（终点即最后一段的 to 是终点，不停靠）。
+                if seg_idx < len(segments) - 1:
+                    cursor += service_time_sec
+
         route_order = [pickup_to_id(s) for s in pickups] + [end_id]
         route_load = sum((reachable_starts[s].passenger_count or 1) for s in pickups)
         vehicle_routes.append(VehicleRoute(
@@ -223,6 +278,7 @@ def plan_route(request: RouteRequest) -> RouteResponse:
             load=route_load,
             capacity=vehicle_capacities[v_idx],
             fixed_cost=vehicle_fixed_costs_raw[v_idx],
+            departure_time=departure_time,
         ))
         fleet_distance += route_distance
         fleet_duration += route_duration
