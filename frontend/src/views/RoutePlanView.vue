@@ -21,6 +21,7 @@ interface PointForm {
   name: string
   lng: string
   lat: string
+  passengers: string
 }
 
 let seq = 0
@@ -31,21 +32,20 @@ function nextId(prefix: string): string {
 
 // 示例默认值（成都），方便演示直接出图
 const startPoints = ref<PointForm[]>([
-  { id: nextId('s'), name: '天府软件园', lng: '104.0668', lat: '30.5470' },
-  { id: nextId('s'), name: '武侯祠', lng: '104.0489', lat: '30.6463' },
-  { id: nextId('s'), name: '春熙路', lng: '104.0817', lat: '30.6571' },
+  { id: nextId('s'), name: '天府软件园', lng: '104.0668', lat: '30.5470', passengers: '12' },
+  { id: nextId('s'), name: '武侯祠', lng: '104.0489', lat: '30.6463', passengers: '8' },
+  { id: nextId('s'), name: '春熙路', lng: '104.0817', lat: '30.6571', passengers: '15' },
 ])
 const endPoint = ref<PointForm>({
   id: nextId('e'),
   name: '公司总部',
   lng: '104.0667',
   lat: '30.5728',
+  passengers: '',
 })
 const optimizeType = ref<OptimizeType>('time')
-// 车队参数（阶段二：车辆数 + 统一座位数，临时展开为 vehicle_capacities 数组发送；
-// 逐车容量 / 每站人数的完整表单留待后续前端 PR）
-const numVehicles = ref<string>('3')
-const vehicleCapacity = ref<string>('20')
+// 车队参数（阶段二：混合车型，逐车座位数列表，直接对应 vehicle_capacities）
+const vehicleCapacities = ref<string[]>(['20', '20', '20'])
 
 const mapEl = ref<HTMLElement | null>(null)
 const { initMap, drawRoute, scriptError } = useRouteMap()
@@ -60,10 +60,17 @@ const errorMsg = ref<string | null>(null)
 const result = ref<RouteResponse | null>(null)
 
 function addStart(): void {
-  startPoints.value.push({ id: nextId('s'), name: '', lng: '', lat: '' })
+  startPoints.value.push({ id: nextId('s'), name: '', lng: '', lat: '', passengers: '' })
 }
 function removeStart(index: number): void {
   startPoints.value.splice(index, 1)
+}
+
+function addVehicle(): void {
+  vehicleCapacities.value.push('20')
+}
+function removeVehicle(index: number): void {
+  vehicleCapacities.value.splice(index, 1)
 }
 
 // 米 → 公里，保留 1 位
@@ -85,7 +92,18 @@ function buildRequest(): RouteRequest | null {
       errorMsg.value = `起点「${s.name || '未命名'}」名称或坐标无效`
       return null
     }
-    parsed.push({ id: s.id, name: s.name.trim(), lat, lng })
+    const point: StartPoint = { id: s.id, name: s.name.trim(), lat, lng }
+    // 人数留空 → 省略字段，后端按 1 人计；填了则必须是非负整数
+    const raw = s.passengers.trim()
+    if (raw !== '') {
+      const n = Number(raw)
+      if (!Number.isInteger(n) || n < 0) {
+        errorMsg.value = `起点「${s.name.trim()}」人数需为非负整数`
+        return null
+      }
+      point.passenger_count = n
+    }
+    parsed.push(point)
   }
   if (parsed.length === 0) {
     errorMsg.value = '至少需要 1 个起点'
@@ -97,21 +115,24 @@ function buildRequest(): RouteRequest | null {
     errorMsg.value = '终点名称或坐标无效'
     return null
   }
-  const nVehicles = Number(numVehicles.value)
-  const capacity = Number(vehicleCapacity.value)
-  if (!Number.isInteger(nVehicles) || nVehicles < 1) {
-    errorMsg.value = '车辆数需为不小于 1 的整数'
+  if (vehicleCapacities.value.length === 0) {
+    errorMsg.value = '至少需要 1 辆车'
     return null
   }
-  if (!Number.isInteger(capacity) || capacity < 1) {
-    errorMsg.value = '单车座位数需为不小于 1 的整数'
-    return null
+  const capacities: number[] = []
+  for (const c of vehicleCapacities.value) {
+    const cap = Number(c)
+    if (!Number.isInteger(cap) || cap < 1) {
+      errorMsg.value = '每辆车座位数需为不小于 1 的整数'
+      return null
+    }
+    capacities.push(cap)
   }
   return {
     start_points: parsed,
     end_point: { id: endPoint.value.id, name: endPoint.value.name.trim(), lat: eLat, lng: eLng },
     optimize_type: optimizeType.value,
-    vehicle_capacities: Array(nVehicles).fill(capacity),
+    vehicle_capacities: capacities,
   }
 }
 
@@ -171,6 +192,14 @@ onMounted(async () => {
           <input v-model="s.name" class="input input--name" placeholder="名称" />
           <input v-model="s.lng" class="input input--coord" placeholder="经度" />
           <input v-model="s.lat" class="input input--coord" placeholder="纬度" />
+          <input
+            v-model="s.passengers"
+            class="input input--num"
+            type="number"
+            min="0"
+            placeholder="人数"
+            title="乘车人数，留空按 1 人计"
+          />
           <button
             class="btn-remove"
             type="button"
@@ -200,16 +229,28 @@ onMounted(async () => {
       </section>
 
       <section class="field-group">
-        <div class="field-group__head"><span>车队</span></div>
-        <div class="point-row">
-          <label class="fleet-field">
-            <span class="fleet-field__label">车辆数</span>
-            <input v-model="numVehicles" class="input input--coord" type="number" min="1" />
-          </label>
-          <label class="fleet-field">
-            <span class="fleet-field__label">单车座位数</span>
-            <input v-model="vehicleCapacity" class="input input--coord" type="number" min="1" />
-          </label>
+        <div class="field-group__head">
+          <span>车队（各车座位数）</span>
+          <button class="btn-text" type="button" @click="addVehicle">+ 添加</button>
+        </div>
+        <div v-for="(_, i) in vehicleCapacities" :key="i" class="point-row">
+          <span class="vehicle-row__label">车 {{ i + 1 }}</span>
+          <input
+            v-model="vehicleCapacities[i]"
+            class="input input--name"
+            type="number"
+            min="1"
+            placeholder="座位数"
+          />
+          <button
+            class="btn-remove"
+            type="button"
+            :disabled="vehicleCapacities.length <= 1"
+            title="删除"
+            @click="removeVehicle(i)"
+          >
+            ×
+          </button>
         </div>
       </section>
 
@@ -324,6 +365,9 @@ onMounted(async () => {
 .input--coord {
   width: 72px;
 }
+.input--num {
+  width: 64px;
+}
 
 .radio {
   margin-right: 14px;
@@ -417,15 +461,12 @@ onMounted(async () => {
   word-break: break-all;
 }
 
-.fleet-field {
+.vehicle-row__label {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
+  align-items: center;
+  width: 40px;
+  font-size: 13px;
   color: #4e5969;
-}
-.fleet-field__label {
-  white-space: nowrap;
 }
 
 .vehicle {
