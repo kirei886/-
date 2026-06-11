@@ -37,7 +37,7 @@ class RouteRequest(BaseModel):
     start_points: List[StartPoint] = Field(..., min_length=1, description="起点列表，至少 1 个")
     end_point: EndPoint
     optimize_type: Literal["time", "distance", "cost"] = Field(default="time", description="优化目标")
-    max_solve_time: Optional[int] = Field(default=30, ge=1, le=300, description="OR-Tools 最大求解时间（秒）")
+    max_solve_time: Optional[int] = Field(default=5, ge=1, le=300, description="OR-Tools 最大求解时间（秒），作收敛兜底；求解器达 solution_limit 即提前返回")
     num_vehicles: Optional[int] = Field(
         default=None, ge=1, le=50, description="车队车辆数；为空时由 vehicle_capacities 长度或服务端默认值决定"
     )

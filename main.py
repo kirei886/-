@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from baidu_map import InvalidAKError, MatrixBuildError, fetch_segment_detail
 from config import (
     BAIDU_MAP_AK,
+    DEFAULT_MAX_SOLVE_TIME,
     DEFAULT_NUM_VEHICLES,
     DEFAULT_VEHICLE_CAPACITY,
     LARGE_COST,
@@ -36,7 +37,7 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     ak = BAIDU_MAP_AK
     if not ak:
         return _error_response("服务端未配置百度地图 AK，请在 .env 中设置 BAIDU_MAP_AK")
-    max_solve_time = request.max_solve_time or 30
+    max_solve_time = request.max_solve_time or DEFAULT_MAX_SOLVE_TIME
     # 车队解析三档优先级：vehicle_types(车型池) > vehicle_capacities(混合车型) > 服务端默认。
     # 展开为扁平车辆数组：每辆车一个座位数 + 一个固定启用成本(原始单位，供响应展示)。
     # vehicle_fixed_costs_scaled 为喂给求解器的整数(×100 对齐弧成本标度)。

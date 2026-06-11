@@ -6,6 +6,9 @@ solver.solve 的单元测试（免网络，使用人造成本矩阵）。
 不可达腿=LARGE_COST。
 """
 
+import math
+import time
+
 from config import LARGE_COST
 from solver import solve
 
@@ -256,3 +259,81 @@ def test_fixed_costs_default_none_regression():
     assert result.success
     assert len(result.used_vehicle_indices) == len(result.routes)
     assert sorted(_all_pickups(result.routes)) == list(range(m))
+
+
+def _build_grid_matrix(m: int) -> list[list[int]]:
+    """
+    构造 (1+m)×(1+m) 成本矩阵，上车点按网格散布，腿成本为真实欧氏距离。
+
+    与 _build_matrix 的「所有真实腿都是 100」不同，这里各腿成本互不相同，
+    经停顺序会显著影响总成本 —— 让 GLS 有真实的优化空间，可据此检验
+    「短时限收敛解」与「跑满长时限解」是否同质。depot→上车点仍为 0（空驶免费）。
+    """
+    pts = [(0, 0)] + [((i % 4) * 1000, (i // 4) * 1000) for i in range(m)]
+
+    def dist(a: int, b: int) -> int:
+        return int(math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]))
+
+    n = 1 + m
+    matrix = [[0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i == j or i == 0:
+                matrix[i][j] = 0
+            else:
+                matrix[i][j] = dist(i, j)
+    return matrix
+
+
+def test_large_problem_converges_fast():
+    """大问题（12 站 6 车）应在远小于时限内返回（solution_limit 收敛，不耗满 time_limit）。
+
+    防回归：此前 GLS 无 solution_limit 时，任何成功求解都耗满 time_limit。
+    给 30 秒时限但断言墙钟 < 5 秒，证明求解器靠 solution_limit 提前收敛。
+    """
+    m = 12
+    matrix = _build_grid_matrix(m)
+    start = time.monotonic()
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=6,
+        demands=[0] + [3] * m,
+        vehicle_capacities=[10] * 6,
+        max_solve_time=30,  # 给足时限；若耗满即回归
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.success
+    assert sorted(_all_pickups(result.routes)) == list(range(m))
+    # 收敛即停，不该接近 30 秒时限
+    assert elapsed < 5, f"求解耗时 {elapsed:.2f}s，疑似未收敛而耗满时限"
+
+
+def test_short_time_limit_keeps_quality():
+    """短时限（5s）与长时限（30s）对同一大问题应得到同质解（solution_limit 不牺牲质量）。
+
+    两者都在 solution_limit 内收敛，目标值（各车总腿成本之和）应一致。
+    """
+    m = 12
+    matrix = _build_grid_matrix(m)
+    demands = [0] + [3] * m
+    caps = [10] * 6
+
+    def total_cost(routes: list[list[int]]) -> int:
+        """各车经停序列的真实腿成本之和（depot 出弧为 0，不计入）。"""
+        cost = 0
+        for r in routes:
+            nodes = [0] + [s + 1 for s in r] + [0]
+            for a, b in zip(nodes, nodes[1:]):
+                cost += matrix[a][b]
+        return cost
+
+    short = solve(matrix, num_starts=m, num_vehicles=6, demands=demands,
+                  vehicle_capacities=caps, max_solve_time=5)
+    long = solve(matrix, num_starts=m, num_vehicles=6, demands=demands,
+                 vehicle_capacities=caps, max_solve_time=30)
+
+    assert short.success and long.success
+    # solution_limit 在两个时限下都先触发，解质量应一致
+    assert total_cost(short.routes) == total_cost(long.routes)

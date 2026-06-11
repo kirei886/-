@@ -21,6 +21,12 @@ _STATUS_SUCCESS = 1    # ROUTING_SUCCESS
 _STATUS_OPTIMAL = 7    # ROUTING_OPTIMAL
 _STATUS_PARTIAL = 2    # ROUTING_PARTIAL_SUCCESS_LOCAL_OPTIMUM_NOT_REACHED
 
+# GLS（GUIDED_LOCAL_SEARCH）元启发式不会自我收敛：找到解后会持续扰动找更优，
+# 不加约束就一直跑到 time_limit 才返回。班车这类小规模问题几毫秒即达最优，却仍
+# 耗满时限（表现为「卡住」）。solution_limit 让其找到约 N 个改进解后收敛即停；
+# 实测大小规模问题都在此前收敛到与跑满长时限完全一致的最优解，time_limit 仅作兜底。
+_SOLUTION_LIMIT = 100
+
 
 class SolveResult(NamedTuple):
     """求解结果。"""
@@ -120,6 +126,9 @@ def solve(
     params.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
     )
+    # 找到约 _SOLUTION_LIMIT 个改进解后收敛即停（GLS 否则会耗满 time_limit）；
+    # time_limit 退化为兜底，仅防极端超大问题失控。
+    params.solution_limit = _SOLUTION_LIMIT
     params.time_limit.seconds = max_solve_time
 
     # --- 求解 ---
@@ -127,6 +136,20 @@ def solve(
     raw_status = model.status()
 
     if solution is None or raw_status not in (_STATUS_SUCCESS, _STATUS_OPTIMAL, _STATUS_PARTIAL):
+        # 给调用方/最终用户中文解释，英文枚举名保留在括号内便于排查。
+        status_explain = {
+            0: "求解器未运行",
+            3: (
+                "未找到可行方案：可能某站乘车人数超过了能单独承载它的单辆车座位数，"
+                "或车队运力不足，请增大车型座位、增加车辆或拆分人数过多的站点"
+            ),
+            4: "求解超时仍未找到可行方案，请适当增大求解时间或放宽车队约束",
+            5: "求解模型非法，请检查请求参数",
+            6: (
+                "约束无法满足（无可行方案）：可能某站乘车人数超过了能单独承载它的"
+                "单辆车座位数，或车队总运力不足，请调整车型座位或车辆数"
+            ),
+        }
         status_names = {
             0: "ROUTING_NOT_SOLVED",
             1: "ROUTING_SUCCESS",
@@ -138,12 +161,13 @@ def solve(
             7: "ROUTING_OPTIMAL",
         }
         status_name = status_names.get(raw_status, f"UNKNOWN({raw_status})")
+        explain = status_explain.get(raw_status, "未找到可行方案")
         return SolveResult(
             success=False,
             routes=[],
             used_vehicle_indices=[],
             raw_status=raw_status,
-            message=f"OR-Tools 求解失败，状态：{status_name}",
+            message=f"{explain}（{status_name}）",
         )
 
     # --- 解析各车辆路径 ---
