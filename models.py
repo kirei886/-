@@ -22,6 +22,17 @@ class EndPoint(BaseModel):
     lng: float = Field(..., ge=-180.0, le=180.0, description="经度")
 
 
+class VehicleType(BaseModel):
+    """车型池中的一种车型（阶段三：车型池自动选型）。"""
+    seats: int = Field(..., ge=1, description="该车型座位数")
+    count: int = Field(..., ge=1, description="该车型可用台数")
+    fixed_cost: int = Field(
+        default=0,
+        ge=0,
+        description="单辆启用成本，单位与优化目标一致（time=秒/distance=米/cost=加权值）；求解器据此自动选型",
+    )
+
+
 class RouteRequest(BaseModel):
     start_points: List[StartPoint] = Field(..., min_length=1, description="起点列表，至少 1 个")
     end_point: EndPoint
@@ -34,6 +45,11 @@ class RouteRequest(BaseModel):
         default=None,
         min_length=1,
         description="各车座位数数组（混合车型，每元素 ≥1）；为空时取服务端默认值",
+    )
+    vehicle_types: Optional[List[VehicleType]] = Field(
+        default=None,
+        min_length=1,
+        description="车型池（阶段三）：求解器据各车型座位数/台数/启用成本自动选型；与 vehicle_capacities 互斥",
     )
 
     @field_validator("vehicle_capacities")
@@ -71,6 +87,13 @@ class RouteRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def check_fleet_source_exclusive(self) -> "RouteRequest":
+        # 车型池与显式容量数组语义重叠，同时给会产生歧义，禁止并存。
+        if self.vehicle_types is not None and self.vehicle_capacities is not None:
+            raise ValueError("vehicle_types 与 vehicle_capacities 不能同时提供")
+        return self
+
 
 class Segment(BaseModel):
     from_id: str
@@ -90,6 +113,10 @@ class VehicleRoute(BaseModel):
     total_duration: float = Field(default=0.0, description="该车总耗时（秒）")
     segments: List[Segment] = Field(default_factory=list)
     load: int = Field(default=0, description="该车承载总人数（各经停站点乘车人数之和）")
+    capacity: int = Field(default=0, description="该车座位数（阶段三体现自动选中的车型容量）")
+    fixed_cost: int = Field(
+        default=0, description="该车启用成本，单位与优化目标一致；阶段二回退路径为 0"
+    )
 
 
 class RouteResponse(BaseModel):

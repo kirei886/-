@@ -10,7 +10,7 @@ from config import (
     DEFAULT_VEHICLE_CAPACITY,
     LARGE_COST,
 )
-from cost_matrix import build_cost_matrix
+from cost_matrix import _to_int_cost, build_cost_matrix
 from models import RouteRequest, RouteResponse, Segment, VehicleRoute
 from solver import solve
 
@@ -37,13 +37,27 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     if not ak:
         return _error_response("服务端未配置百度地图 AK，请在 .env 中设置 BAIDU_MAP_AK")
     max_solve_time = request.max_solve_time or 30
-    # 车队容量数组(混合车型)：优先用请求体数组；缺省时用统一容量填充。
-    if request.vehicle_capacities:
+    # 车队解析三档优先级：vehicle_types(车型池) > vehicle_capacities(混合车型) > 服务端默认。
+    # 展开为扁平车辆数组：每辆车一个座位数 + 一个固定启用成本(原始单位，供响应展示)。
+    # vehicle_fixed_costs_scaled 为喂给求解器的整数(×100 对齐弧成本标度)。
+    vehicle_capacities: List[int]
+    vehicle_fixed_costs_raw: List[int]
+    if request.vehicle_types:
+        vehicle_capacities = []
+        vehicle_fixed_costs_raw = []
+        for vt in request.vehicle_types:
+            vehicle_capacities.extend([vt.seats] * vt.count)
+            vehicle_fixed_costs_raw.extend([vt.fixed_cost] * vt.count)
+    elif request.vehicle_capacities:
         vehicle_capacities = list(request.vehicle_capacities)
+        vehicle_fixed_costs_raw = [0] * len(vehicle_capacities)
     else:
         num_vehicles = request.num_vehicles or DEFAULT_NUM_VEHICLES
         vehicle_capacities = [DEFAULT_VEHICLE_CAPACITY] * num_vehicles
+        vehicle_fixed_costs_raw = [0] * num_vehicles
     num_vehicles = len(vehicle_capacities)
+    # 固定成本与弧成本同量纲，统一 ×100(同 cost_matrix._to_int_cost)后传求解器。
+    vehicle_fixed_costs_scaled = [_to_int_cost(c) for c in vehicle_fixed_costs_raw]
 
     # 起点/终点坐标列表
     start_coords: List[Tuple[float, float]] = [
@@ -110,6 +124,7 @@ def plan_route(request: RouteRequest) -> RouteResponse:
         demands=demands,
         vehicle_capacities=vehicle_capacities,
         max_solve_time=max_solve_time,
+        vehicle_fixed_costs=vehicle_fixed_costs_scaled,
     )
 
     if not solve_result.success:
@@ -140,7 +155,9 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     fleet_distance = 0.0
     fleet_duration = 0.0
 
-    for v_idx, pickups in enumerate(solve_result.routes):
+    for route_pos, pickups in enumerate(solve_result.routes):
+        # 该路线对应的真实 OR-Tools 车辆下标，用于反查座位数/固定成本(车型池选型)。
+        v_idx = solve_result.used_vehicle_indices[route_pos]
         # 该车真实经停的「节点序列」：起点们 + 终点(0)
         # 相邻腿用于连通性校验与分段查询。
         leg_nodes = [pickup_to_node(s) for s in pickups] + [0]
@@ -203,6 +220,8 @@ def plan_route(request: RouteRequest) -> RouteResponse:
             total_duration=route_duration,
             segments=segments,
             load=route_load,
+            capacity=vehicle_capacities[v_idx],
+            fixed_cost=vehicle_fixed_costs_raw[v_idx],
         ))
         fleet_distance += route_distance
         fleet_duration += route_duration
