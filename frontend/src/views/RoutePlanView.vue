@@ -49,13 +49,14 @@ const optimizeType = ref<OptimizeType>('time')
 // 车队（阶段三：车型池，座位数 / 台数 / 启用成本；求解器据此自动选型）
 // 中间态用字符串便于输入，提交时转 number
 interface VehicleTypeForm {
+  id: string
   seats: string
   count: string
   fixedCost: string
 }
 const vehicleTypes = ref<VehicleTypeForm[]>([
-  { seats: '40', count: '1', fixedCost: '0' },
-  { seats: '11', count: '3', fixedCost: '500' },
+  { id: nextId('v'), seats: '40', count: '1', fixedCost: '0' },
+  { id: nextId('v'), seats: '11', count: '3', fixedCost: '500' },
 ])
 
 // 车型池预设（localStorage 持久化）
@@ -64,7 +65,7 @@ const selectedPreset = ref<string>('')
 const presetNameInput = ref<string>('')
 
 const mapEl = ref<HTMLElement | null>(null)
-const { initMap, drawRoute, scriptError } = useRouteMap()
+const { initMap, drawRoute, clear: clearMap, scriptError } = useRouteMap()
 
 /** 第 v 辆车的配色，与地图画线一致 */
 function vehicleColor(vIdx: number): string {
@@ -83,7 +84,7 @@ function removeStart(index: number): void {
 }
 
 function addVehicleType(): void {
-  vehicleTypes.value.push({ seats: '20', count: '1', fixedCost: '0' })
+  vehicleTypes.value.push({ id: nextId('v'), seats: '20', count: '1', fixedCost: '0' })
 }
 function removeVehicleType(index: number): void {
   vehicleTypes.value.splice(index, 1)
@@ -132,6 +133,7 @@ function loadPreset(name: string): void {
   const preset = getPreset(name)
   if (!preset) return
   vehicleTypes.value = preset.types.map((t) => ({
+    id: nextId('v'),
     seats: String(t.seats),
     count: String(t.count),
     fixedCost: String(t.fixed_cost ?? 0),
@@ -223,12 +225,15 @@ function collectPoints(req: RouteRequest): MapPoint[] {
 }
 
 async function onSubmit(): Promise<void> {
+  // 先清空上一次的结果与地图：无论本次校验是否通过，旧结果都不应残留，
+  // 否则校验失败时屏幕仍显示上一次的方案，易被误认为「无反馈」或「输入未生效」。
   errorMsg.value = null
+  result.value = null
+  clearMap()
   const req = buildRequest()
   if (!req) return
 
   submitting.value = true
-  result.value = null
   try {
     const res = await planRoute(req)
     result.value = res
@@ -311,7 +316,7 @@ onMounted(async () => {
           <span>车队（车型池）</span>
           <button class="btn-text" type="button" @click="addVehicleType">+ 添加</button>
         </div>
-        <div v-for="(vt, i) in vehicleTypes" :key="i" class="point-row">
+        <div v-for="(vt, i) in vehicleTypes" :key="vt.id" class="point-row">
           <span class="vehicle-row__label">车型 {{ i + 1 }}</span>
           <input
             v-model="vt.seats"
@@ -405,9 +410,10 @@ onMounted(async () => {
         >
           <div class="vehicle__head">
             <span class="vehicle__dot" :style="{ backgroundColor: vehicleColor(route.vehicle_index) }"></span>
-            <span class="vehicle__name">车 {{ route.vehicle_index + 1 }}</span>
+            <span class="vehicle__name">车 {{ route.vehicle_index + 1 }}（{{ route.capacity }} 座）</span>
             <span class="vehicle__meta">
               {{ route.load }} 人 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
+              <template v-if="route.fixed_cost"> · 启用成本 {{ route.fixed_cost }}</template>
             </span>
           </div>
           <div class="vehicle__order">{{ route.route_order.join(' → ') }}</div>
@@ -540,6 +546,10 @@ onMounted(async () => {
   font-size: 13px;
 }
 .msg--error {
+  padding: 8px 10px;
+  border: 1px solid #f5c2c0;
+  border-radius: 4px;
+  background: #fdecec;
   color: #e1372e;
 }
 .msg--warn {
