@@ -116,3 +116,73 @@ def test_solution_covers_all_when_feasible():
     assert result.success
     pickups = _all_pickups(result.routes)
     assert sorted(pickups) == list(range(m))
+
+
+def test_mixed_capacity_split():
+    """混合车型 [3,2]、5 站点各需求 1 → 拆分满足各车容量、站点无重无漏。"""
+    m = 5
+    matrix = _build_matrix(m)
+    capacities = [3, 2]  # 总运力 5，恰好够 5 站
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=len(capacities),
+        demands=[0] + [1] * m,
+        vehicle_capacities=capacities,
+        max_solve_time=5,
+    )
+
+    assert result.success
+    loads = sorted((len(r) for r in result.routes), reverse=True)
+    for load, cap in zip(loads, sorted(capacities, reverse=True)):
+        assert load <= cap
+    pickups = _all_pickups(result.routes)
+    assert sorted(pickups) == list(range(m))
+
+
+def test_mixed_capacity_split_feasible():
+    """混合车型 [3,2]、4 站点各需求 1 → 求解成功，各车不超容量、无重无漏。"""
+    m = 4
+    matrix = _build_matrix(m)
+    capacities = [3, 2]
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=len(capacities),
+        demands=[0] + [1] * m,
+        vehicle_capacities=capacities,
+        max_solve_time=5,
+    )
+
+    assert result.success
+    # 每条线路站点数不超过对应车容量（按降序匹配即可验证可行性边界）
+    loads = sorted((len(r) for r in result.routes), reverse=True)
+    cap_sorted = sorted(capacities, reverse=True)
+    for load, cap in zip(loads, cap_sorted):
+        assert load <= cap
+    pickups = _all_pickups(result.routes)
+    assert sorted(pickups) == list(range(m))
+
+
+def test_multi_passenger_demand():
+    """各站需求 >1（人数）：demands=[0,2,2,1]、容量 [3,2] → 成功且分配不超容量。"""
+    m = 3
+    matrix = _build_matrix(m)
+    demands = [0, 2, 2, 1]  # 站点人数：2、2、1，总需求 5
+    capacities = [3, 2]     # 总运力 5，恰好够
+    result = solve(
+        matrix,
+        num_starts=m,
+        num_vehicles=len(capacities),
+        demands=demands,
+        vehicle_capacities=capacities,
+        max_solve_time=5,
+    )
+
+    assert result.success
+    pickups = _all_pickups(result.routes)
+    assert sorted(pickups) == list(range(m))
+    # 每辆车承载人数不超过某辆车容量（验证多人需求真实计入容量维度）
+    for r in result.routes:
+        route_demand = sum(demands[s + 1] for s in r)
+        assert route_demand <= max(capacities)

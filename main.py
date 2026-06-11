@@ -37,8 +37,13 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     if not ak:
         return _error_response("服务端未配置百度地图 AK，请在 .env 中设置 BAIDU_MAP_AK")
     max_solve_time = request.max_solve_time or 30
-    num_vehicles = request.num_vehicles or DEFAULT_NUM_VEHICLES
-    vehicle_capacity = request.vehicle_capacity or DEFAULT_VEHICLE_CAPACITY
+    # 车队容量数组(混合车型)：优先用请求体数组；缺省时用统一容量填充。
+    if request.vehicle_capacities:
+        vehicle_capacities = list(request.vehicle_capacities)
+    else:
+        num_vehicles = request.num_vehicles or DEFAULT_NUM_VEHICLES
+        vehicle_capacities = [DEFAULT_VEHICLE_CAPACITY] * num_vehicles
+    num_vehicles = len(vehicle_capacities)
 
     # 起点/终点坐标列表
     start_coords: List[Tuple[float, float]] = [
@@ -68,21 +73,35 @@ def plan_route(request: RouteRequest) -> RouteResponse:
     num_starts = len(reachable_starts)
 
     # --- 步骤1.5：运力预判 ---
-    # 阶段一每站点需求=1，车队总运力 = 车辆数 × 单车容量。
-    if num_starts > num_vehicles * vehicle_capacity:
-        return RouteResponse(
-            status="no_solution",
-            message=(
-                f"运力不足：可达站点数 {num_starts} 超过车队总运力 "
-                f"{num_vehicles} 辆 × {vehicle_capacity} = {num_vehicles * vehicle_capacity}"
-            ),
-            unreachable_points=unreachable_ids,
-        )
+    # 阶段二每站点需求 = passenger_count（缺省 1 人），容量语义为座位数。
+    demands = [0] + [(p.passenger_count or 1) for p in reachable_starts]
+    if num_starts > 0:
+        max_demand = max(demands[1:])
+        max_capacity = max(vehicle_capacities)
+        # 单站人数超过最大车容量：无任何车可单独承载该站，必然无解。
+        if max_demand > max_capacity:
+            return RouteResponse(
+                status="no_solution",
+                message=(
+                    f"运力不足：单站乘车人数 {max_demand} 超过最大车容量 {max_capacity}"
+                ),
+                unreachable_points=unreachable_ids,
+            )
+        # 总需求超过车队总运力。
+        total_demand = sum(demands)
+        total_capacity = sum(vehicle_capacities)
+        if total_demand > total_capacity:
+            return RouteResponse(
+                status="no_solution",
+                message=(
+                    f"运力不足：总乘车人数 {total_demand} 超过车队总运力 {total_capacity}"
+                    f"（{len(vehicle_capacities)} 辆车座位之和）"
+                ),
+                unreachable_points=unreachable_ids,
+            )
 
     # --- 步骤2：OR-Tools 多车求解 ---
-    # 节点 0 = depot（终点），1~M = 可达起点；需求 depot=0、每站点=1
-    demands = [0] + [1] * num_starts
-    vehicle_capacities = [vehicle_capacity] * num_vehicles
+    # 节点 0 = depot（终点），1~M = 可达起点；需求 depot=0、每站点=该站乘车人数
 
     solve_result = solve(
         matrix_result.cost_matrix,
@@ -176,13 +195,14 @@ def plan_route(request: RouteRequest) -> RouteResponse:
             ))
 
         route_order = [pickup_to_id(s) for s in pickups] + [end_id]
+        route_load = sum((reachable_starts[s].passenger_count or 1) for s in pickups)
         vehicle_routes.append(VehicleRoute(
             vehicle_index=v_idx,
             route_order=route_order,
             total_distance=route_distance,
             total_duration=route_duration,
             segments=segments,
-            load=len(pickups),
+            load=route_load,
         ))
         fleet_distance += route_distance
         fleet_duration += route_duration

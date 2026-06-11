@@ -42,9 +42,10 @@ const endPoint = ref<PointForm>({
   lat: '30.5728',
 })
 const optimizeType = ref<OptimizeType>('time')
-// 车队参数（阶段一：固定车辆数 + 统一容量，容量语义为单车最多经停站点数）
+// 车队参数（阶段二：车辆数 + 统一座位数，临时展开为 vehicle_capacities 数组发送；
+// 逐车容量 / 每站人数的完整表单留待后续前端 PR）
 const numVehicles = ref<string>('3')
-const vehicleCapacity = ref<string>('2')
+const vehicleCapacity = ref<string>('20')
 
 const mapEl = ref<HTMLElement | null>(null)
 const { initMap, drawRoute, scriptError } = useRouteMap()
@@ -103,15 +104,14 @@ function buildRequest(): RouteRequest | null {
     return null
   }
   if (!Number.isInteger(capacity) || capacity < 1) {
-    errorMsg.value = '单车最多站点需为不小于 1 的整数'
+    errorMsg.value = '单车座位数需为不小于 1 的整数'
     return null
   }
   return {
     start_points: parsed,
     end_point: { id: endPoint.value.id, name: endPoint.value.name.trim(), lat: eLat, lng: eLng },
     optimize_type: optimizeType.value,
-    num_vehicles: nVehicles,
-    vehicle_capacity: capacity,
+    vehicle_capacities: Array(nVehicles).fill(capacity),
   }
 }
 
@@ -207,7 +207,7 @@ onMounted(async () => {
             <input v-model="numVehicles" class="input input--coord" type="number" min="1" />
           </label>
           <label class="fleet-field">
-            <span class="fleet-field__label">单车最多站点</span>
+            <span class="fleet-field__label">单车座位数</span>
             <input v-model="vehicleCapacity" class="input input--coord" type="number" min="1" />
           </label>
         </div>
@@ -244,7 +244,7 @@ onMounted(async () => {
             <span class="vehicle__dot" :style="{ backgroundColor: vehicleColor(route.vehicle_index) }"></span>
             <span class="vehicle__name">车 {{ route.vehicle_index + 1 }}</span>
             <span class="vehicle__meta">
-              {{ route.load }} 站 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
+              {{ route.load }} 人 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
             </span>
           </div>
           <div class="vehicle__order">{{ route.route_order.join(' → ') }}</div>

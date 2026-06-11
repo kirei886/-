@@ -17,7 +17,7 @@ export interface StartPoint {
   lat: number
   /** 经度，[-180, 180] */
   lng: number
-  /** 预计乘车人数，当前版本仅透传 */
+  /** 乘车人数，缺省按 1 人计入容量需求 */
   passenger_count?: number
 }
 
@@ -39,10 +39,10 @@ export interface RouteRequest {
   optimize_type?: OptimizeType
   /** OR-Tools 最大求解时间（秒），[1, 300]，默认 30 */
   max_solve_time?: number
-  /** 车队车辆数，[1, 50]；为空时取服务端默认值 */
+  /** 车队车辆数，[1, 50]；为空时由 vehicle_capacities 长度或服务端默认值决定 */
   num_vehicles?: number
-  /** 单车容量（阶段一语义为单车最多经停站点数）；为空时取服务端默认值 */
-  vehicle_capacity?: number
+  /** 各车座位数数组（混合车型，每元素 ≥1）；为空时取服务端默认值 */
+  vehicle_capacities?: number[]
 }
 
 /** 单段路径 */
@@ -71,7 +71,7 @@ export interface VehicleRoute {
   /** 该车总耗时（秒） */
   total_duration: number
   segments: Segment[]
-  /** 该车承载量（阶段一为经停站点数） */
+  /** 该车承载总人数（各经停站点乘车人数之和） */
   load: number
 }
 
