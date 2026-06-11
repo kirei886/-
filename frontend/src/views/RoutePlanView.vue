@@ -14,6 +14,7 @@ import type {
   RouteRequest,
   RouteResponse,
   StartPoint,
+  VehicleRoute,
   VehicleType,
 } from '@/types/route'
 
@@ -46,6 +47,9 @@ const endPoint = ref<PointForm>({
   passengers: '',
 })
 const optimizeType = ref<OptimizeType>('time')
+// 时间窗（阶段四）：终点最晚到达 HH:MM（留空=不启用时间窗）+ 每站停靠分钟。
+const latestArrival = ref<string>('')
+const serviceMinutes = ref<string>('3')
 // 车队（阶段三：车型池，座位数 / 台数 / 启用成本；求解器据此自动选型）
 // 中间态用字符串便于输入，提交时转 number
 interface VehicleTypeForm {
@@ -180,6 +184,19 @@ function formatKm(meters: number): string {
 function formatMin(seconds: number): string {
   return Math.round(seconds / 60).toString()
 }
+// 当日秒数 → HH:MM（阶段四时间窗：到达/发车时刻展示）
+function formatClock(daySeconds: number): string {
+  const total = Math.round(daySeconds / 60)
+  const hh = Math.floor(total / 60) % 24
+  const mm = total % 60
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
+}
+// 该车到达终点的时刻（最后一段的 arrival_time，当日秒数）；缺省 0
+function arrivalAtEnd(route: VehicleRoute): number {
+  const segs = route.segments
+  const last = segs.length ? segs[segs.length - 1].arrival_time : null
+  return last ?? 0
+}
 
 /** 校验并组装请求体；任一坐标非法返回 null */
 function buildRequest(): RouteRequest | null {
@@ -219,12 +236,35 @@ function buildRequest(): RouteRequest | null {
   if (!vehicle_types) {
     return null
   }
-  return {
+  // 时间窗（阶段四）：终点最晚到达 HH:MM（留空=不启用）。
+  // String() 兜底防 <input> 类型化；<input type="time"> 给的就是 "HH:MM"。
+  const end_point: RouteRequest['end_point'] = {
+    id: endPoint.value.id,
+    name: endPoint.value.name.trim(),
+    lat: eLat,
+    lng: eLng,
+  }
+  const arrival = String(latestArrival.value ?? '').trim()
+  const req: RouteRequest = {
     start_points: parsed,
-    end_point: { id: endPoint.value.id, name: endPoint.value.name.trim(), lat: eLat, lng: eLng },
+    end_point,
     optimize_type: optimizeType.value,
     vehicle_types,
   }
+  if (arrival !== '') {
+    end_point.latest_arrival_time = arrival
+    // 仅在启用时间窗时附带停靠时间（分钟 → 秒）。留空/非法则后端取默认。
+    const mins = String(serviceMinutes.value ?? '').trim()
+    if (mins !== '') {
+      const n = Number(mins)
+      if (!Number.isInteger(n) || n < 0) {
+        errorMsg.value = '每站停靠时间需为非负整数（分钟）'
+        return null
+      }
+      req.service_time = n * 60
+    }
+  }
+  return req
 }
 
 /** 当前所有点位（起点 + 终点），供地图打点定位 */
@@ -323,6 +363,33 @@ onMounted(async () => {
         <label class="radio"><input v-model="optimizeType" type="radio" value="time" />时间</label>
         <label class="radio"><input v-model="optimizeType" type="radio" value="distance" />距离</label>
         <label class="radio"><input v-model="optimizeType" type="radio" value="cost" />成本</label>
+      </section>
+
+      <section class="field-group">
+        <div class="field-group__head">
+          <span>时间窗</span>
+          <span class="field-group__hint">留空不启用</span>
+        </div>
+        <div class="tw-row">
+          <label class="tw-label">最晚到达</label>
+          <input
+            v-model="latestArrival"
+            class="input"
+            type="time"
+            title="企业最晚到达时刻；填了才启用时间窗，求解器保证各车在此前抵达"
+          />
+        </div>
+        <div class="tw-row">
+          <label class="tw-label">每站停靠</label>
+          <input
+            v-model="serviceMinutes"
+            class="input input--num"
+            type="number"
+            min="0"
+            title="每个上车点停靠时间（分钟），仅在启用时间窗时计入"
+          />
+          <span class="tw-unit">分钟</span>
+        </div>
       </section>
 
       <section class="field-group">
@@ -429,6 +496,12 @@ onMounted(async () => {
               {{ route.load }} 人 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
               <template v-if="route.fixed_cost"> · 启用成本 {{ route.fixed_cost }}</template>
             </span>
+          </div>
+          <div
+            v-if="route.departure_time != null"
+            class="vehicle__clock"
+          >
+            发车 {{ formatClock(route.departure_time) }} → 到达 {{ formatClock(arrivalAtEnd(route)) }}
           </div>
           <div class="vehicle__order">{{ routeOrderNames(route.route_order) }}</div>
         </div>
@@ -653,6 +726,32 @@ onMounted(async () => {
 .vehicle__order {
   color: #1f2329;
   word-break: break-all;
+}
+.vehicle__clock {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #1f6fe5;
+}
+
+.field-group__hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: #8a8f99;
+}
+.tw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tw-label {
+  width: 60px;
+  font-size: 13px;
+  color: #4e5969;
+}
+.tw-unit {
+  font-size: 13px;
+  color: #8a8f99;
 }
 
 .map-wrap {
