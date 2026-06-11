@@ -96,8 +96,11 @@ export function useRouteMap() {
     // 终点 ID（各车 route_order 末位一致），统一最后画一次
     let endId: string | null = null
 
-    response.routes.forEach((route, vIdx) => {
-      const color = ROUTE_PALETTE[vIdx % ROUTE_PALETTE.length]
+    response.routes.forEach((route, routeIdx) => {
+      // 配色与编号都用「线路序」(routes 数组位置)，与左栏摘要 vehicleColor(idx) 一致。
+      // 不用 route.vehicle_index：车型池选型后启用车辆下标不连续（如 3/6/7/8），
+      // 直接展示会跳号且对用户不直观；线路序 1/2/3/4 连续，同型号多车靠座位/载客区分。
+      const color = ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length]
 
       // 1. 画该车分段 polyline。path 为空时退化为 from→to 直线，避免断线。
       for (const seg of route.segments) {
@@ -139,7 +142,7 @@ export function useRouteMap() {
         const marker = new BMapGL.Marker(pt)
         map.value.addOverlay(marker)
 
-        const label = new BMapGL.Label(`车${vIdx + 1}-${index + 1}. ${p.name}`, {
+        const label = new BMapGL.Label(`线路${routeIdx + 1}-${index + 1}. ${p.name}`, {
           position: pt,
           offset: new BMapGL.Size(12, -6),
         })

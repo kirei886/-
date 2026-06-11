@@ -67,14 +67,21 @@ const presetNameInput = ref<string>('')
 const mapEl = ref<HTMLElement | null>(null)
 const { initMap, drawRoute, clear: clearMap, scriptError } = useRouteMap()
 
-/** 第 v 辆车的配色，与地图画线一致 */
-function vehicleColor(vIdx: number): string {
-  return ROUTE_PALETTE[vIdx % ROUTE_PALETTE.length]
+/** 线路序（routes 数组位置）对应的配色，与地图画线一致 */
+function vehicleColor(routeIdx: number): string {
+  return ROUTE_PALETTE[routeIdx % ROUTE_PALETTE.length]
 }
 
 const submitting = ref(false)
 const errorMsg = ref<string | null>(null)
 const result = ref<RouteResponse | null>(null)
+// 本次结果对应的点位 id→站名映射（提交时快照，使摘要显示站名而非内部 ID）。
+const pointNames = ref<Map<string, string>>(new Map())
+
+/** 把一条线路的 route_order（站点 ID 序列）渲染为站名序列；查不到名字时回退显示 ID。 */
+function routeOrderNames(order: string[]): string {
+  return order.map((id) => pointNames.value.get(id) ?? id).join(' → ')
+}
 
 function addStart(): void {
   startPoints.value.push({ id: nextId('s'), name: '', lng: '', lat: '', passengers: '' })
@@ -111,9 +118,12 @@ function parseVehicleTypes(): VehicleType[] | null {
       errorMsg.value = '车型台数需为不小于 1 的整数'
       return null
     }
-    // 启用成本留空 → 0；填了须为非负整数
+    // 启用成本留空 → 0；填了须为非负整数。
+    // 注意：<input type="number"> + v-model 在部分输入序列下会把绑定值强制转成
+    // number 类型（而非 string），直接 .trim() 会抛 TypeError 中断提交（按钮卡死、
+    // 请求发不出）。故用 String() 包一层兜底，兼容 string / number 两种运行时类型。
     let fixedCost = 0
-    const raw = vt.fixedCost.trim()
+    const raw = String(vt.fixedCost ?? '').trim()
     if (raw !== '') {
       const c = Number(raw)
       if (!Number.isInteger(c) || c < 0) {
@@ -182,8 +192,9 @@ function buildRequest(): RouteRequest | null {
       return null
     }
     const point: StartPoint = { id: s.id, name: s.name.trim(), lat, lng }
-    // 人数留空 → 省略字段，后端按 1 人计；填了则必须是非负整数
-    const raw = s.passengers.trim()
+    // 人数留空 → 省略字段，后端按 1 人计；填了则必须是非负整数。
+    // 同 fixedCost：<input type="number"> 可能把绑定值变成 number，String() 兜底防 .trim() 抛错。
+    const raw = String(s.passengers ?? '').trim()
     if (raw !== '') {
       const n = Number(raw)
       if (!Number.isInteger(n) || n < 0) {
@@ -238,7 +249,10 @@ async function onSubmit(): Promise<void> {
     const res = await planRoute(req)
     result.value = res
     if (res.status === 'success') {
-      drawRoute(res, collectPoints(req))
+      const pts = collectPoints(req)
+      // 快照 id→站名，供摘要把 route_order 渲染成站名。
+      pointNames.value = new Map(pts.map((p) => [p.id, p.name]))
+      drawRoute(res, pts)
     } else {
       errorMsg.value = res.message
     }
@@ -404,19 +418,19 @@ onMounted(async () => {
           </div>
         </div>
         <div
-          v-for="route in result.routes"
+          v-for="(route, idx) in result.routes"
           :key="route.vehicle_index"
           class="vehicle"
         >
           <div class="vehicle__head">
-            <span class="vehicle__dot" :style="{ backgroundColor: vehicleColor(route.vehicle_index) }"></span>
-            <span class="vehicle__name">车 {{ route.vehicle_index + 1 }}（{{ route.capacity }} 座）</span>
+            <span class="vehicle__dot" :style="{ backgroundColor: vehicleColor(idx) }"></span>
+            <span class="vehicle__name">线路 {{ idx + 1 }}（{{ route.capacity }} 座）</span>
             <span class="vehicle__meta">
               {{ route.load }} 人 · {{ formatKm(route.total_distance) }} km · {{ formatMin(route.total_duration) }} min
               <template v-if="route.fixed_cost"> · 启用成本 {{ route.fixed_cost }}</template>
             </span>
           </div>
-          <div class="vehicle__order">{{ route.route_order.join(' → ') }}</div>
+          <div class="vehicle__order">{{ routeOrderNames(route.route_order) }}</div>
         </div>
         <p v-if="result.unreachable_points.length" class="msg msg--warn">
           不可达起点已剔除：{{ result.unreachable_points.join('、') }}
