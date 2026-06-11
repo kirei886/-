@@ -15,11 +15,11 @@ DISTANCE_WEIGHT: float = 0.001  # 统一量纲，距离单位为米
 # OR-Tools 默认最大求解时间（秒）
 DEFAULT_MAX_SOLVE_TIME: int = 30
 
-# 车队默认配置（阶段一：固定车辆数 + 统一容量）
-# 容量语义为「单车最多经停站点数」（阶段一每站点需求=1）；
-# 阶段二容量将改为座位数、需求改为 passenger_count，字段前向兼容。
+# 车队默认配置(阶段二:混合车型,各车独立座位数)
+# 容量语义为「座位数」,每站需求 = passenger_count(缺省 1 人)。
+# 请求未传 vehicle_capacities 时,用 DEFAULT_VEHICLE_CAPACITY 填充 DEFAULT_NUM_VEHICLES 辆统一容量数组。
 DEFAULT_NUM_VEHICLES: int = 3
-DEFAULT_VEHICLE_CAPACITY: int = 2
+DEFAULT_VEHICLE_CAPACITY: int = 20
 
 # 百度地图 API
 BAIDU_MAP_ROUTE_MATRIX_URL = "https://api.map.baidu.com/routematrix/v2/driving"
