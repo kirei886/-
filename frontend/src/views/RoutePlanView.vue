@@ -9,6 +9,7 @@ import { onMounted, ref } from 'vue'
 import { planRoute } from '@/api/route'
 import { useRouteMap, ROUTE_PALETTE, type MapPoint } from '@/composables/useRouteMap'
 import { useVehiclePresets } from '@/composables/useVehiclePresets'
+import { parseStartPointCsv } from '@/composables/useCsvImport'
 import type {
   OptimizeType,
   RouteRequest,
@@ -92,6 +93,45 @@ function addStart(): void {
 }
 function removeStart(index: number): void {
   startPoints.value.splice(index, 1)
+}
+
+// 批量导入（CSV）：折叠区显隐 + 解析报错。解析合法行追加到 startPoints，不覆盖手填。
+const showImport = ref(false)
+const importErrors = ref<string[]>([])
+const importInfo = ref<string>('')
+
+/** 选中 CSV 文件 → 解析 → 合法行追加到起点列表，错误逐行展示 */
+async function onCsvSelected(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  importErrors.value = []
+  importInfo.value = ''
+  if (!file) return
+  try {
+    const text = await file.text()
+    const { rows, errors } = parseStartPointCsv(text)
+    importErrors.value = errors
+    if (rows.length > 0) {
+      // 坐标/人数转回字符串以契合表单的 string 中间态；追加后完全融入既有提交链路。
+      startPoints.value.push(
+        ...rows.map((r) => ({
+          id: nextId('s'),
+          name: r.name,
+          lng: String(r.lng),
+          lat: String(r.lat),
+          passengers: r.passengers != null ? String(r.passengers) : '',
+        })),
+      )
+      importInfo.value = `已导入 ${rows.length} 个起点${errors.length ? `,${errors.length} 行被跳过` : ''}`
+    } else {
+      importInfo.value = errors.length ? '' : '未解析到有效起点行'
+    }
+  } catch {
+    importErrors.value = ['文件读取失败,请确认是文本 CSV 文件']
+  } finally {
+    // 重置 value，允许重复选同一文件再次触发 change。
+    input.value = ''
+  }
 }
 
 function addVehicleType(): void {
@@ -323,7 +363,27 @@ onMounted(async () => {
       <section class="field-group">
         <div class="field-group__head">
           <span>上车点</span>
-          <button class="btn-text" type="button" @click="addStart">+ 添加</button>
+          <span class="head-actions">
+            <button class="btn-text" type="button" @click="showImport = !showImport">
+              批量导入
+            </button>
+            <button class="btn-text" type="button" @click="addStart">+ 添加</button>
+          </span>
+        </div>
+        <div v-if="showImport" class="csv-import">
+          <p class="csv-import__hint">
+            CSV 每行:名称,经度,纬度,人数(人数可留空)。首行可为表头(自动识别),否则按此列序。
+          </p>
+          <input
+            class="csv-import__file"
+            type="file"
+            accept=".csv,text/csv"
+            @change="onCsvSelected"
+          />
+          <p v-if="importInfo" class="msg msg--info">{{ importInfo }}</p>
+          <ul v-if="importErrors.length" class="csv-import__errors">
+            <li v-for="(err, i) in importErrors" :key="i" class="msg--warn">{{ err }}</li>
+          </ul>
         </div>
         <div v-for="(s, i) in startPoints" :key="s.id" class="point-row">
           <input v-model="s.name" class="input input--name" placeholder="名称" />
@@ -641,6 +701,36 @@ onMounted(async () => {
 }
 .msg--warn {
   color: #c97a00;
+}
+.msg--info {
+  color: #1f6fe5;
+}
+
+.head-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.csv-import {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px dashed #d9dce0;
+  border-radius: 4px;
+}
+.csv-import__hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8a8f99;
+}
+.csv-import__file {
+  width: 100%;
+  font-size: 12px;
+}
+.csv-import__errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
 }
 
 .result {
