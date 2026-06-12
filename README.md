@@ -100,3 +100,7 @@ npm run build
 ## CI
 
 `.github/workflows/ci.yml` 在 push / PR 到 `main` 时自动运行:后端依赖安装与编译检查、前端 `npm ci` 与 `npm run build`。
+
+## 部署
+
+上架演示站(云主机 + Nginx + systemd 同源部署)的完整指引见 [DEPLOY.md](DEPLOY.md),含两个百度地图 AK 的白名单配置、HTTPS、上线冒烟验证与排障速查。
